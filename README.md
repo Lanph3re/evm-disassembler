@@ -2,4 +2,5 @@
 
 Ethereum vm bytecode disassembler written in python, uses recursive traversal disassemble algorithm.
 
-> usage: python evm_disassembler.py <input>
+## Usage
+`python evm_disassembler.py <input>`
