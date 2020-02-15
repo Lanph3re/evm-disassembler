@@ -15,7 +15,6 @@ class evm:
         self.stack_idx = 0
         self.data = data
         self.pc = 0
-        self.memory = {}
         self.queue = queue.Queue(maxsize=0)
 
         # self.blocks
@@ -34,7 +33,6 @@ class evm:
         #   @desc address that will be disassembled in linear disassemble algorithm
         self.fin_addrs = []
         self.func_input = {}
-        self.func_memory_input = {}
 
         # self.func_list
         #   @ function information
@@ -185,53 +183,44 @@ class evm:
             245: self.create2,
             250: self.staticcall,
             253: self.revert,
-            254: self.evm_assert,
             255: self.selfdestruct,
         }
 
     # recursive traversal disassemble
-    def recursive_run(self, pc):
-        self.pc = pc
-        self.stack_idx = 0
-        self.stack = []
+    def recursive_run(self):
+        self.queue.put(0)
+        while not self.queue.empty():
+            self.pc = self.queue.get()
+            self.stack_idx = 0
+            self.stack = []
 
-        while True:
-            cur_op = self.data[self.pc]
             if self.pc in self.visited:
-                return
-
-            # skip invalid opcode
-            if cur_op not in self.table:
-                self.visited[self.pc] = '{:02x}'.format(cur_op)
-                self.pc += 1
                 continue
 
-            # mark current address as visited
-            inst = self.table[cur_op]
-            self.visited[self.pc] = inst
-            self.pc += 1
+            while self.pc <= len(self.data):
+                cur_op = self.data[self.pc]
 
-            # terminal instructions(stop, revert, return)
-            if inst in self.terminal:
-                self.stack_func(cur_op)
-                # store instructions following terminal insts for future instrument
-                self.fin_addrs.append(self.pc)
-                return
+                # skip invalid opcode
+                if cur_op not in self.table:
+                    self.visited[self.pc] = 'INVALID'
+                    self.pc += 1
+                    break
 
-            # execute current operation
-            if inst.startswith('PUSH'):
-                imm_width = int(inst[4:])
-                imm_val = self.data[self.pc:self.pc+imm_width].hex()
-                self.visited[self.pc - 1] += ' 0x{}'.format(imm_val)
-                self.push(int(imm_val, 16))
-                self.pc += imm_width
-            elif inst not in self.jump_ops:
-                self.stack_func(cur_op)
-            else:
-                pass
+                # mark current address as visited
+                inst = self.table[cur_op]
+                self.visited[self.pc] = inst
+                self.pc += 1
 
-            if inst in self.jump_ops:
-                if inst == '*JUMPI':
+                # execute current operation
+                if inst not in self.jump_ops:
+                    self.stack_func(cur_op)
+
+                    # terminal instructions(stop, revert, return)
+                    # store instructions following terminal insts for future instrument
+                    if inst in self.terminal:
+                        self.fin_addrs.append(self.pc)
+                        break
+                elif inst == '*JUMPI':
                     jump_addr, cond = self.jumpi()
 
                     # heuristic: contract function detection
@@ -245,7 +234,8 @@ class evm:
                     self.func_input[self.pc] = copy.deepcopy(self.stack)
                     if self.pc not in self.blocks:
                         self.blocks[self.pc] = []
-                    self.blocks[self.pc].append((self.pc - 1,  ' not ' + cond))
+                    self.blocks[self.pc].append(
+                        (self.pc - 1,  'not ' + cond))
 
                     # mark destination of 'JUMPI' as new block
                     self.queue.put(jump_addr)
@@ -255,13 +245,24 @@ class evm:
                     self.blocks[jump_addr].append((self.pc - 1, cond))
 
                     self.stack = []
+                    break
                 else:
                     # 'JUMP'
                     jump_addr = self.jump()
 
                     # mark instruction following 'JUMP'
-                    self.func_input[self.pc] = copy.deepcopy(self.stack)
                     self.fin_addrs.append(self.pc)
+
+                    if type(jump_addr) != int:
+                        self.stack = []
+                        break
+
+                    # mark destination of 'JUMP' as new block
+                    self.queue.put(jump_addr)
+                    self.func_input[jump_addr] = copy.deepcopy(self.stack)
+                    if jump_addr not in self.blocks:
+                        self.blocks[jump_addr] = []
+                    self.blocks[jump_addr].append((self.pc - 1, None))
 
                     # heuristic: function detection
                     # check if address after 'JUMP' exists in stack
@@ -270,6 +271,8 @@ class evm:
                         if jump_addr not in self.func_list:
                             num_args = len(self.stack) - ret_idx - 1
                             self.func_list[jump_addr] = [num_args, 0, []]
+                        self.func_input[self.pc] = copy.deepcopy(
+                            self.stack)
                         self.func_list[jump_addr][2].append(self.pc)
 
                     # FIXME: code below has problems
@@ -283,34 +286,26 @@ class evm:
                             func_info[1] = len(self.stack)
                             if jump_addr not in self.blocks:
                                 self.blocks[jump_addr] = []
-                            self.blocks[jump_addr].append((self.pc - 1, None))
-
-                    if type(jump_addr) != int:
-                        self.stack = []
-                        continue
-
-                    # mark destination of 'JUMP' as new block
-                    self.queue.put(jump_addr)
-                    self.func_input[jump_addr] = copy.deepcopy(self.stack)
-                    if jump_addr not in self.blocks:
-                        self.blocks[jump_addr] = []
-                    self.blocks[jump_addr].append((self.pc - 1, None))
+                            self.blocks[jump_addr].append(
+                                (self.pc - 1, None))
 
                     self.stack = []
-
-            if self.pc > len(self.data):
-                return
+                    break
 
     # do linear disassemble to find dead blocks
     def linear_run(self):
         for fin_addr in self.fin_addrs:
             self.pc = fin_addr
             while self.pc not in self.visited:
+                if fin_addr not in self.blocks:
+                    self.blocks[fin_addr] = []
+                self.blocks[fin_addr].append((None, None))
+
                 cur_op = self.data[self.pc]
 
                 # skip invalid opcode
                 if cur_op not in self.table:
-                    self.visited[self.pc] = '{:02x}'.format(cur_op)
+                    self.visited[self.pc] = 'INVALID'
                     self.pc += 1
                     continue
 
@@ -351,42 +346,84 @@ class evm:
     def add(self):
         operand_1 = self.stack_pop()
         operand_2 = self.stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+        if type(operand_2) == int:
+            operand_2 = hex(operand_2)
+
         self.stack.append('{} + {}'.format(operand_1, operand_2))
 
     def mul(self):
         operand_1 = self.stack_pop()
         operand_2 = self.stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+        if type(operand_2) == int:
+            operand_2 = hex(operand_2)
+
         self.stack.append('{} * {}'.format(operand_1, operand_2))
 
     def sub(self):
         operand_1 = self.stack_pop()
         operand_2 = self.stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+        if type(operand_2) == int:
+            operand_2 = hex(operand_2)
+
         self.stack.append('{} - {}'.format(operand_1, operand_2))
 
     def div(self):
         operand_1 = self.stack_pop()
         operand_2 = self.stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+        if type(operand_2) == int:
+            operand_2 = hex(operand_2)
+
         self.stack.append('{} / {}'.format(operand_1, operand_2))
 
     def sdiv(self):
         operand_1 = self.stack_pop()
         operand_2 = self.stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+        if type(operand_2) == int:
+            operand_2 = hex(operand_2)
+
         self.stack.append('{} / {}'.format(operand_1, operand_2))
 
     def mod(self):
         operand_1 = self.stack_pop()
         operand_2 = self.stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+        if type(operand_2) == int:
+            operand_2 = hex(operand_2)
+
         self.stack.append('{} % {}'.format(operand_1, operand_2))
 
     def smod(self):
         operand_1 = self.stack_pop()
         operand_2 = self.stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+        if type(operand_2) == int:
+            operand_2 = hex(operand_2)
+
         self.stack.append('{} % {}'.format(operand_1, operand_2))
 
     def addmod(self):
         operand_1 = self.stack_pop()
         operand_2 = self.stack_pop()
         operand_3 = self.stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+        if type(operand_2) == int:
+            operand_2 = hex(operand_2)
+        if type(operand_3) == int:
+            operand_3 = hex(operand_3)
+
         self.stack.append(
             '({} + {}) % {}'.format(operand_1, operand_2, operand_3))
 
@@ -394,99 +431,185 @@ class evm:
         operand_1 = self.stack_pop()
         operand_2 = self.stack_pop()
         operand_3 = self.stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+        if type(operand_2) == int:
+            operand_2 = hex(operand_2)
+        if type(operand_3) == int:
+            operand_3 = hex(operand_3)
+
         self.stack.append(
             '({} * {}) % {}'.format(operand_1, operand_2, operand_3))
 
     def exp(self):
         operand_1 = self.stack_pop()
         operand_2 = self.stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+        if type(operand_2) == int:
+            operand_2 = hex(operand_2)
+
         self.stack.append('{} ** {}'.format(operand_1, operand_2))
 
     def signextend(self):
         operand_1 = self.stack_pop()
         operand_2 = self.stack_pop()
-        self.stack.append('{} ** {}'.format(operand_1, operand_2))
+        if type(operand_2) == int:
+            operand_2 = hex(operand_2)
+
+        self.stack.append('SIGNEXTEND({}, {})'.format(operand_1, operand_2))
 
     def lt(self):
         operand_1 = self.stack_pop()
         operand_2 = self.stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+        if type(operand_2) == int:
+            operand_2 = hex(operand_2)
+
         self.stack.append('{} < {}'.format(operand_1, operand_2))
 
     def gt(self):
         operand_1 = self.stack_pop()
         operand_2 = self.stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+        if type(operand_2) == int:
+            operand_2 = hex(operand_2)
+
         self.stack.append('{} > {}'.format(operand_1, operand_2))
 
     def slt(self):
         operand_1 = self.stack_pop()
         operand_2 = self.stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+        if type(operand_2) == int:
+            operand_2 = hex(operand_2)
+
         self.stack.append('{} < {}'.format(operand_1, operand_2))
 
     def sgt(self):
         operand_1 = self.stack_pop()
         operand_2 = self.stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+        if type(operand_2) == int:
+            operand_2 = hex(operand_2)
+
         self.stack.append('{} > {}'.format(operand_1, operand_2))
 
     def eq(self):
         operand_1 = self.stack_pop()
         operand_2 = self.stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+        if type(operand_2) == int:
+            operand_2 = hex(operand_2)
+
         self.stack.append('{} == {}'.format(operand_1, operand_2))
 
     def iszero(self):
         operand_1 = self.stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+
         self.stack.append('{} == 0'.format(operand_1))
 
     def evm_and(self):
         operand_1 = self.stack_pop()
         operand_2 = self.stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+        if type(operand_2) == int:
+            operand_2 = hex(operand_2)
+
         self.stack.append('{} & {}'.format(operand_1, operand_2))
 
     def evm_or(self):
         operand_1 = self.stack_pop()
         operand_2 = self.stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+        if type(operand_2) == int:
+            operand_2 = hex(operand_2)
+
         self.stack.append('{} | {}'.format(operand_1, operand_2))
 
     def xor(self):
         operand_1 = self.stack_pop()
         operand_2 = self.stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+        if type(operand_2) == int:
+            operand_2 = hex(operand_2)
+
         self.stack.append('{} ^ {}'.format(operand_1, operand_2))
 
     def evm_not(self):
         operand_1 = self.stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+
         self.stack.append('~{}'.format(operand_1))
 
     def byte(self):
         operand_1 = self.stack_pop()
         operand_2 = self.stack_pop()
+        if type(operand_2) == int:
+            operand_2 = hex(operand_2)
+
         self.stack.append(
             '({} >> (248 - {} * 8)) & 0xFF)'.format(operand_2, operand_1))
 
     def shl(self):
         operand_1 = self.stack_pop()
         operand_2 = self.stack_pop()
-        self.stack.append('{} << {}'.format(operand_1, operand_2))
+        if type(operand_2) == int:
+            operand_2 = hex(operand_2)
+
+        self.stack.append('{} << {}'.format(operand_2, operand_1))
 
     def shr(self):
         operand_1 = self.stack_pop()
         operand_2 = self.stack_pop()
-        self.stack.append('{} >> {}'.format(operand_1, operand_2))
+        if type(operand_2) == int:
+            operand_2 = hex(operand_2)
+
+        self.stack.append('{} >> {}'.format(operand_2, operand_1))
 
     def sar(self):
         operand_1 = self.stack_pop()
         operand_2 = self.stack_pop()
-        self.stack.append('{} >> {}'.format(operand_1, operand_2))
+        if type(operand_2) == int:
+            operand_2 = hex(operand_2)
+
+        self.stack.append('{} >> {}'.format(operand_2, operand_1))
 
     def sha3(self):
-        for _ in range(2):
-            self.stack_pop()
-        self.stack.append('hash')
+        operand_1 = self.stack_pop()
+        operand_2 = self.stack_pop()
+        if type(operand_1) == int and type(operand_2) == int:
+            operand_2 = hex(operand_1 + operand_2)
+            operand_1 = hex(operand_1)
+        elif type(operand_1) == int:
+            operand_1 = hex(operand_1)
+            operand_2 = operand_1 + ' + ' + operand_2
+        else:
+            operand_2 = operand_1 + ' + ' + hex(operand_2)
+
+        self.stack.append(
+            'hash(memory[{}:{}])'.format(operand_1, operand_2))
 
     def address(self):
-        self.stack.append('address(' + str(self.pc) + ')')
+        self.stack.append('address(\'this\')')
 
     def balance(self):
         operand_1 = self.stack_pop()
-        self.stack.append('address(' + str(operand_1) + ').balance')
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+
+        self.stack.append('address(' + operand_1 + ').balance')
 
     def origin(self):
         self.stack.append('tx.origin')
@@ -500,11 +623,13 @@ class evm:
     def calldataload(self):
         operand_1 = self.stack_pop()
         if type(operand_1) == int:
-            self.stack.append('msg.data[{}:{}]'.format(
-                hex(operand_1), hex(operand_1 + 32)))
+            operand_2 = hex(operand_1 + 0x20)
+            operand_1 = hex(operand_1)
         else:
-            self.stack.append('msg.data[{}:{}]'.format(
-                operand_1, operand_1 + '+32'))
+            operand_2 = operand_1 + ' + 0x20'
+
+        self.stack.append('msg.data[{}:{}]'.format(
+            operand_1, operand_2))
 
     def calldatasize(self):
         self.stack.append('msg.data.size')
@@ -525,6 +650,9 @@ class evm:
 
     def extcodesize(self):
         operand_1 = self.stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+
         self.stack.append('address({}).code.size'.format(operand_1))
 
     def extcodecopy(self):
@@ -539,12 +667,17 @@ class evm:
             self.stack_pop()
 
     def extcodehash(self):
-        for _ in range(1):
-            self.stack_pop()
-        self.stack.append('extcodehash')
+        operand_1 = self.stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+
+        self.stack.append('extcodehash({}'.format(operand_1))
 
     def blockhash(self):
         operand_1 = self.stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+
         self.stack.append('block.blockHash({})'.format(operand_1))
 
     def coinbase(self):
@@ -563,48 +696,32 @@ class evm:
         self.stack.append('block.gaslimit')
 
     def pop(self):
-        for _ in range(1):
-            self.stack_pop()
+        self.stack_pop()
 
     def mload(self):
         operand_1 = self.stack_pop()
-        if(type(operand_1) == int):
-            self.stack.append('memory[{}:{}]'.format(
-                operand_1, operand_1 + 32))
+        if type(operand_1) == int:
+            operand_2 = hex(operand_1 + 0x20)
+            operand_1 = hex(operand_1)
         else:
-            self.stack.append('memory[{}:{}]'.format(
-                operand_1, operand_1 + '+32'))
+            operand_2 = operand_1 + ' + 0x20'
+
+        self.stack.append('memory[{}:{}]'.format(
+            operand_1, operand_2))
 
     def mstore(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
-        if type(operand_1) == int:
-            self.memory['memory[{}:{}]'.format(
-                hex(operand_1), hex(operand_1 + 0x20))] = operand_2
-        else:
-            self.memory['memory[{}:{}]'.format(
-                operand_1, operand_1 + '+0x20')] = operand_2
+        for _ in range(2):
+            self.stack_pop()
 
     def mstore8(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
-        if type(operand_1) == int:
-            if type(operand_2) == int:
-                self.memory['memory[{}:{}]'.format(
-                    hex(operand_1), hex(operand_1 + 0x20))] = operand_2 & 0xFF
-            else:
-                self.memory['memory[{}:{}]'.format(
-                    hex(operand_1), hex(operand_1 + 0x20))] = operand_2 + '+0xFF'
-        else:
-            if type(operand_2) == int:
-                self.memory['memory[{}:{}]'.format(
-                    operand_1, operand_1 + '+0x20')] = operand_2 & 0xFF
-            else:
-                self.memory['memory[{}:{}]'.format(
-                    operand_1, operand_1 + '+0x20')] = operand_2 + '& 0xFF'
+        for _ in range(2):
+            self.stack_pop()
 
     def sload(self):
         operand_1 = self.stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+
         self.stack.append('storage[{}]'.format(operand_1))
 
     def sstore(self):
@@ -612,8 +729,7 @@ class evm:
             self.stack_pop()
 
     def jump(self):
-        destination = self.stack_pop()
-        return destination
+        return self.stack_pop()
 
     def jumpi(self):
         destination = self.stack_pop()
@@ -621,7 +737,7 @@ class evm:
         return (destination, condition)
 
     def evm_pc(self):
-        self.stack.append('pc')
+        self.stack.append('$pc')
 
     def msize(self):
         self.stack.append('MSIZE()')
@@ -632,8 +748,12 @@ class evm:
     def jumpdest(self):
         return
 
-    def push(self, value):
-        self.stack.append(value)
+    def push(self):
+        imm_width = int(self.table[self.data[self.pc - 1]][4:])
+        imm_val = self.data[self.pc:self.pc+imm_width].hex()
+        self.visited[self.pc - 1] += ' 0x{}'.format(imm_val)
+        self.stack.append(int(imm_val, 16))
+        self.pc += imm_width
 
     def dup(self):
         idx = int(self.table[self.data[self.pc - 1]][3:])
@@ -652,17 +772,45 @@ class evm:
 
     def log(self):
         idx = int(self.table[self.data[self.pc - 1]][3:])
-        for _ in range(2):
-            self.stack_pop()
-        for _ in range(idx):
+        for _ in range(2 + idx):
             self.stack_pop()
 
     def create(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
-        operand_3 = self.stack_pop()
+        operand_1 = self.stack_pop()  # value
+        operand_2 = self.stack_pop()  # offset
+        operand_3 = self.stack_pop()  # length
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+        if type(operand_2) == int and type(operand_3) == int:
+            operand_3 = hex(operand_2 + operand_3)
+            operand_2 = hex(operand_2)
+        elif type(operand_2) == int:
+            operand_2 = hex(operand_2)
+            operand_3 = operand_2 + ' + ' + operand_3
+        else:
+            operand_3 = operand_2 + ' + ' + hex(operand_3)
+
         self.stack.append('new memory[{}:{}].value({})'.format(
-            operand_2, operand_2 + operand_3, operand_1))
+            operand_2, operand_3, operand_1))
+
+    def create2(self):
+        operand_1 = self.stack_pop()  # value
+        operand_2 = self.stack_pop()  # offset
+        operand_3 = self.stack_pop()  # length
+        self.stack_pop()  # salt
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+        if type(operand_2) == int and type(operand_3) == int:
+            operand_3 = hex(operand_2 + operand_3)
+            operand_2 = hex(operand_2)
+        elif type(operand_2) == int:
+            operand_2 = hex(operand_2)
+            operand_3 = operand_2 + ' + ' + operand_3
+        else:
+            operand_3 = operand_2 + ' + ' + hex(operand_3)
+
+        self.stack.append('new memory[{}:{}].value({})'.format(
+            operand_2, operand_3, operand_1))
 
     def call(self):
         for _ in range(7):
@@ -683,15 +831,6 @@ class evm:
             self.stack_pop()
         self.stack.append('success')
 
-    def create2(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
-        operand_3 = self.stack_pop()
-        for _ in range(1):
-            self.stack_pop()
-        self.stack.append('new memory[{}:{}].value({})'.format(
-            operand_2, operand_2 + operand_3, operand_1))
-
     def staticcall(self):
         for _ in range(6):
             self.stack_pop()
@@ -701,9 +840,5 @@ class evm:
         for _ in range(2):
             self.stack_pop()
 
-    def evm_assert(self):
-        return
-
     def selfdestruct(self):
-        for _ in range(1):
-            self.stack_pop()
+        self.stack_pop()
