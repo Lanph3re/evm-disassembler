@@ -44,6 +44,7 @@ class evm:
 
         # function table
         self.opcodes_func = {
+            0: self.stop,
             1: self.add,
             2: self.mul,
             3: self.sub,
@@ -231,50 +232,47 @@ class evm:
 
             if inst in self.jump_ops:
                 if inst == '*JUMPI':
-                    self.queue.put(self.pc)
-                    jump_addr, condi = self.jumpi()
-                    self.func_input[self.pc] = copy.deepcopy(self.stack)
+                    jump_addr, cond = self.jumpi()
 
-                    # heuristic
+                    # heuristic: contract function detection
                     # find entry point of each contract function
                     # using pattern 'PUSH4, ..., JUMPI'
                     if self.data[self.pc - 0xb] == 0x63 or self.data[self.pc - 0xa] == 0x63:
                         self.func_list[jump_addr] = [0, 1, [None]]
 
                     # mark instruction following 'JUMPI' as new block
+                    self.queue.put(self.pc)
+                    self.func_input[self.pc] = copy.deepcopy(self.stack)
                     if self.pc not in self.blocks:
-                        self.blocks[self.pc] = [
-                            ((self.pc - 1), ' not ' + condi)]
-                    else:
-                        self.blocks[self.pc].append(
-                            ((self.pc - 1),  ' not ' + condi))
-
-                    self.queue.put(jump_addr)
-                    self.func_input[jump_addr] = copy.deepcopy(self.stack)
+                        self.blocks[self.pc] = []
+                    self.blocks[self.pc].append((self.pc - 1,  ' not ' + cond))
 
                     # mark destination of 'JUMPI' as new block
+                    self.queue.put(jump_addr)
+                    self.func_input[jump_addr] = copy.deepcopy(self.stack)
                     if jump_addr not in self.blocks:
-                        self.blocks[jump_addr] = [((self.pc - 1), condi)]
-                    else:
-                        self.blocks[jump_addr].append(
-                            ((self.pc - 1), condi))
+                        self.blocks[jump_addr] = []
+                    self.blocks[jump_addr].append((self.pc - 1, cond))
+
                     self.stack = []
                 else:
                     # 'JUMP'
                     jump_addr = self.jump()
+
+                    # mark instruction following 'JUMP'
                     self.func_input[self.pc] = copy.deepcopy(self.stack)
                     self.fin_addrs.append(self.pc)
 
-                    # check if destination of 'JUMP' is address of function
+                    # heuristic: function detection
+                    # check if address after 'JUMP' exists in stack
                     if self.pc in self.stack:
                         ret_idx = self.stack.index(self.pc)
-                        num_args = len(self.stack) - ret_idx - 1
                         if jump_addr not in self.func_list:
-                            self.func_list[jump_addr] = [
-                                num_args, 0, [self.pc]]
-                        else:
-                            self.func_list[jump_addr][2].append(self.pc)
+                            num_args = len(self.stack) - ret_idx - 1
+                            self.func_list[jump_addr] = [num_args, 0, []]
+                        self.func_list[jump_addr][2].append(self.pc)
 
+                    # FIXME: code below has problems
                     # check if destination of 'JUMP' is return address
                     # and get number of return values.
                     # stack gets cleaned every 'JUMP' is executed,
@@ -284,25 +282,20 @@ class evm:
                         if jump_addr in func_info[2]:
                             func_info[1] = len(self.stack)
                             if jump_addr not in self.blocks:
-                                self.blocks[jump_addr] = [
-                                    ((self.pc - 1), None)]
-                            else:
-                                self.blocks[jump_addr].append(
-                                    ((self.pc - 1), None))
+                                self.blocks[jump_addr] = []
+                            self.blocks[jump_addr].append((self.pc - 1, None))
 
                     if type(jump_addr) != int:
                         self.stack = []
                         continue
 
+                    # mark destination of 'JUMP' as new block
                     self.queue.put(jump_addr)
                     self.func_input[jump_addr] = copy.deepcopy(self.stack)
-
-                    # mark destination of 'JUMP' as new block
                     if jump_addr not in self.blocks:
-                        self.blocks[jump_addr] = [((self.pc - 1), None)]
-                    else:
-                        self.blocks[jump_addr].append(
-                            ((self.pc - 1), None))
+                        self.blocks[jump_addr] = []
+                    self.blocks[jump_addr].append((self.pc - 1, None))
+
                     self.stack = []
 
             if self.pc > len(self.data):
@@ -519,10 +512,6 @@ class evm:
     def calldatacopy(self):
         for _ in range(3):
             self.stack_pop()
-        '''
-        self.stack.append('msg.data[{}:{}]'.format(operand_1, operand_1 + 32))
-        memory[destOffset:destOffset+length] = msg.data[offset:offset+length]
-        '''
 
     def codesize(self):
         self.stack.append('address(this).code.size')
@@ -530,9 +519,6 @@ class evm:
     def codecopy(self):
         for _ in range(3):
             self.stack_pop()
-        '''
-        memory[destOffset:destOffset+length] = msg.data[offset:offset+length]
-        '''
 
     def gasprice(self):
         self.stack.append('tx.gasprice')
@@ -544,10 +530,6 @@ class evm:
     def extcodecopy(self):
         for _ in range(4):
             self.stack_pop()
-        '''
-        memory[destOffset:destOffset + \
-            length] = address(addr).code[offset:offset+length]
-        '''
 
     def returndatasize(self):
         self.stack.append('RETURNDATASIZE()')
@@ -555,9 +537,6 @@ class evm:
     def returndatacopy(self):
         for _ in range(3):
             self.stack_pop()
-        '''
-        memory[destOffset:destOffset+length] = RETURNDATA[offset:offset+length]
-        '''
 
     def extcodehash(self):
         for _ in range(1):
@@ -605,7 +584,6 @@ class evm:
         else:
             self.memory['memory[{}:{}]'.format(
                 operand_1, operand_1 + '+0x20')] = operand_2
-        '''memory[offset:offset+32] = value'''
 
     def mstore8(self):
         operand_1 = self.stack_pop()
@@ -624,7 +602,6 @@ class evm:
             else:
                 self.memory['memory[{}:{}]'.format(
                     operand_1, operand_1 + '+0x20')] = operand_2 + '& 0xFF'
-        '''	memory[offset] = value & 0xFF'''
 
     def sload(self):
         operand_1 = self.stack_pop()
@@ -633,9 +610,6 @@ class evm:
     def sstore(self):
         for _ in range(2):
             self.stack_pop()
-        '''
-        storage[key] = value
-        '''
 
     def jump(self):
         destination = self.stack_pop()
@@ -703,9 +677,6 @@ class evm:
     def evm_return(self):
         for _ in range(2):
             self.stack_pop()
-        '''
-        return memory[offset:offset+length]
-        '''
 
     def delegatecall(self):
         for _ in range(6):
@@ -729,9 +700,6 @@ class evm:
     def revert(self):
         for _ in range(2):
             self.stack_pop()
-        '''
-        revert(memory[offset:offset+length])
-        '''
 
     def evm_assert(self):
         return
