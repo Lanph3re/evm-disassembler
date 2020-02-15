@@ -5,7 +5,7 @@ import evm
 
 if __name__ == '__main__':
     data = bytes.fromhex(input('>> '))
-    
+
     vm = evm.evm(data)
     vm.recursive_run()
     vm.linear_run()
@@ -26,7 +26,7 @@ if __name__ == '__main__':
                         output.write('    RETURN(contract function)\n')
                 else:
                     output.write('    returns to 0x{:04x}\n'.format(ret))
-            
+
             output.write('\n')
 
         output.write('----------------------\n')
@@ -48,8 +48,10 @@ if __name__ == '__main__':
                         '// Inputs[{}]\n'.format(len(vm.func_input[addr])))
                     for i, arg in enumerate(reversed(vm.func_input[addr])):
                         if type(arg) == int:
-                            output.write('//   stack[{}] = {}\n'.format(-(i+1), hex(arg)))
+                            output.write(
+                                '//   stack[{}] = {}\n'.format(-(i+1), hex(arg)))
                         else:
-                            output.write('//   stack[{}] = {}\n'.format(-(i+1), arg))
+                            output.write(
+                                '//   stack[{}] = {}\n'.format(-(i+1), arg))
 
             output.write('  0x{:04x}: {}\n'.format(addr, inst))

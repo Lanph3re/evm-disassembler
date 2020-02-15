@@ -6,15 +6,12 @@ import struct
 
 class evm:
     def __init__(self, data):
-        with open('../rsrc/opcode.json', 'r') as opcode_json:
-            self.table = json.load(opcode_json)
-            self.table = {int(k): v for k, v in self.table.items()}
-        self.terminal = ['*STOP', '*RETURN', '*REVERT']
-        self.jump_ops = ['*JUMP', '*JUMPI']
-        self.stack = []
-        self.stack_idx = 0
         self.data = data
+
+        self.stack = []
         self.pc = 0
+
+        # queue used for recursive disassemble
         self.queue = queue.Queue(maxsize=0)
 
         # self.blocks
@@ -39,6 +36,12 @@ class evm:
         #   @key address of function
         #   @value [num_args, num_retval, [return_addr, ...]]
         self.func_list = {0x0: [0, 0, [None]]}
+
+        # opcode table
+        with open('../rsrc/opcode.json', 'r') as opcode_json:
+            self.table = {int(k): v for k, v in json.load(opcode_json).items()}
+        self.terminal = ['*STOP', '*RETURN', '*REVERT']
+        self.jump_ops = ['*JUMP', '*JUMPI']
 
         # function table
         self.opcodes_func = {
@@ -188,16 +191,16 @@ class evm:
 
     # recursive traversal disassemble
     def recursive_run(self):
-        self.queue.put(0)
+        self.queue.put((0, []))
         while not self.queue.empty():
-            self.pc = self.queue.get()
-            self.stack_idx = 0
-            self.stack = []
+            entry = self.queue.get()
+            self.pc = entry[0]
+            self.stack = entry[1]
 
-            if self.pc in self.visited:
-                continue
+            # used for calculate the number of return values
+            entry_stack_size = len(self.stack)
 
-            while self.pc <= len(self.data):
+            while self.pc <= len(self.data) and self.pc not in self.visited:
                 cur_op = self.data[self.pc]
 
                 # skip invalid opcode
@@ -223,6 +226,10 @@ class evm:
                 elif inst == '*JUMPI':
                     jump_addr, cond = self.jumpi()
 
+                    # skip indirect call
+                    if type(jump_addr) != int:
+                        break
+
                     # heuristic: contract function detection
                     # find entry point of each contract function
                     # using pattern 'PUSH4, ..., JUMPI'
@@ -230,7 +237,7 @@ class evm:
                         self.func_list[jump_addr] = [0, 1, [None]]
 
                     # mark instruction following 'JUMPI' as new block
-                    self.queue.put(self.pc)
+                    self.queue.put((self.pc, copy.deepcopy(self.stack)))
                     self.func_input[self.pc] = copy.deepcopy(self.stack)
                     if self.pc not in self.blocks:
                         self.blocks[self.pc] = []
@@ -238,13 +245,11 @@ class evm:
                         (self.pc - 1,  'not ' + cond))
 
                     # mark destination of 'JUMPI' as new block
-                    self.queue.put(jump_addr)
+                    self.queue.put((jump_addr, copy.deepcopy(self.stack)))
                     self.func_input[jump_addr] = copy.deepcopy(self.stack)
                     if jump_addr not in self.blocks:
                         self.blocks[jump_addr] = []
                     self.blocks[jump_addr].append((self.pc - 1, cond))
-
-                    self.stack = []
                     break
                 else:
                     # 'JUMP'
@@ -253,12 +258,12 @@ class evm:
                     # mark instruction following 'JUMP'
                     self.fin_addrs.append(self.pc)
 
+                    # skip indirect call
                     if type(jump_addr) != int:
-                        self.stack = []
                         break
 
                     # mark destination of 'JUMP' as new block
-                    self.queue.put(jump_addr)
+                    self.queue.put((jump_addr, copy.deepcopy(self.stack)))
                     self.func_input[jump_addr] = copy.deepcopy(self.stack)
                     if jump_addr not in self.blocks:
                         self.blocks[jump_addr] = []
@@ -271,11 +276,11 @@ class evm:
                         if jump_addr not in self.func_list:
                             num_args = len(self.stack) - ret_idx - 1
                             self.func_list[jump_addr] = [num_args, 0, []]
+                        self.queue.put((self.pc, copy.deepcopy(self.stack)))
                         self.func_input[self.pc] = copy.deepcopy(
                             self.stack)
                         self.func_list[jump_addr][2].append(self.pc)
 
-                    # FIXME: code below has problems
                     # check if destination of 'JUMP' is return address
                     # and get number of return values.
                     # stack gets cleaned every 'JUMP' is executed,
@@ -283,24 +288,23 @@ class evm:
                     # is the number of return values
                     for func_info in self.func_list.values():
                         if jump_addr in func_info[2]:
-                            func_info[1] = len(self.stack)
+                            func_info[1] = len(self.stack) - entry_stack_size
                             if jump_addr not in self.blocks:
                                 self.blocks[jump_addr] = []
                             self.blocks[jump_addr].append(
                                 (self.pc - 1, None))
-
-                    self.stack = []
                     break
 
     # do linear disassemble to find dead blocks
     def linear_run(self):
         for fin_addr in self.fin_addrs:
+            if fin_addr not in self.blocks:
+                self.blocks[fin_addr] = []
+            if fin_addr not in self.visited:
+                self.blocks[fin_addr].append((0xdeadbeef, None))
+
             self.pc = fin_addr
             while self.pc not in self.visited:
-                if fin_addr not in self.blocks:
-                    self.blocks[fin_addr] = []
-                self.blocks[fin_addr].append((None, None))
-
                 cur_op = self.data[self.pc]
 
                 # skip invalid opcode
@@ -331,9 +335,6 @@ class evm:
                 self.blocks[i] = [(None, None)]
 
     def stack_pop(self):
-        if len(self.stack) == 0:
-            self.stack_idx += 1
-            return 'stack[{}]'.format(-self.stack_idx)
         return self.stack.pop()
 
     # stack related
@@ -595,8 +596,10 @@ class evm:
         elif type(operand_1) == int:
             operand_1 = hex(operand_1)
             operand_2 = operand_1 + ' + ' + operand_2
-        else:
+        elif type(operand_2) == int:
             operand_2 = operand_1 + ' + ' + hex(operand_2)
+        else:
+            pass
 
         self.stack.append(
             'hash(memory[{}:{}])'.format(operand_1, operand_2))
@@ -757,17 +760,10 @@ class evm:
 
     def dup(self):
         idx = int(self.table[self.data[self.pc - 1]][3:])
-        if idx > len(self.stack):
-            self.stack.append('stack[{}]'.format(-idx))
-        else:
-            self.stack.append(self.stack[-idx])
+        self.stack.append(self.stack[-idx])
 
     def swap(self):
         idx = int(self.table[self.data[self.pc - 1]][4:])
-        if idx + 1 > len(self.stack):
-            for i in range(idx + 1 - len(self.stack)):
-                self.stack = [
-                    ('stack[{}]'.format(idx + 1 - (idx + 1 - len(self.stack)) + i))] + self.stack
         self.stack[-idx - 1], self.stack[-1] = self.stack[-1], self.stack[-idx - 1]
 
     def log(self):
@@ -787,8 +783,10 @@ class evm:
         elif type(operand_2) == int:
             operand_2 = hex(operand_2)
             operand_3 = operand_2 + ' + ' + operand_3
-        else:
+        elif type(operand_3) == int:
             operand_3 = operand_2 + ' + ' + hex(operand_3)
+        else:
+            pass
 
         self.stack.append('new memory[{}:{}].value({})'.format(
             operand_2, operand_3, operand_1))
@@ -806,8 +804,10 @@ class evm:
         elif type(operand_2) == int:
             operand_2 = hex(operand_2)
             operand_3 = operand_2 + ' + ' + operand_3
-        else:
+        elif type(operand_3) == int:
             operand_3 = operand_2 + ' + ' + hex(operand_3)
+        else:
+            pass
 
         self.stack.append('new memory[{}:{}].value({})'.format(
             operand_2, operand_3, operand_1))
