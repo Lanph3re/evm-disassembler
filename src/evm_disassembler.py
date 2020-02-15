@@ -4,11 +4,7 @@ import queue
 import evm
 
 if __name__ == '__main__':
-    if len(sys.argv) != 2:
-        print('usage: python {} <data>'.format(sys.argv[0]))
-        exit(1)
-
-    data = open(sys.argv[1], 'rb').read()
+    data = bytes.fromhex(input('>> '))
     vm = evm.evm(data)
     vm.queue.put(0)
 
@@ -32,19 +28,18 @@ if __name__ == '__main__':
                         output.write('\t\tRETURN(contract function)\n')
                 else:
                     output.write('\t\treturns to 0x{:04x}\n'.format(ret))
-            output.write('\n')
 
-        output.write('----------------------\n')
-        output.write('Disassembly:')
-        output.write('\nlabel_0000:\n')
+        output.write('\n----------------------\n')
+        output.write('Disassembly:\n')
+        output.write('label_0000:\n')
         for addr, inst in result:
             if addr in vm.blocks:
                 output.write('\nlabel_{:04X}:\n'.format(addr))
                 if addr in vm.func_input:
                     output.write(
-                        "// Inputs[{}]\n".format(len(vm.func_input[addr])))
+                        '// Inputs[{}]\n'.format(len(vm.func_input[addr])))
                     for i, arg in enumerate(vm.func_input[addr]):
-                        output.write("//\t stack[{}] = {}\n".format(i, arg))
+                        output.write('//\t stack[{}] = {}\n'.format(i, arg))
                 for incoming in vm.blocks[addr]:
                     if incoming[0] is not None:
                         output.write(
