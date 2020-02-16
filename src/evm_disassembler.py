@@ -31,9 +31,11 @@ if __name__ == '__main__':
 
             output.write('\n')
 
-        output.write('----------------------\n')
-        output.write('Disassembly:\n')
-        output.write('LABEL_0000:\n')
+        output.write(
+            '----------------------\n'
+            'Disassembly\n'
+            'LABEL_0000:\n'
+        )
         for addr, inst in instructions:
             if addr in vm.blocks:
                 output.write('\nLABEL_{:04X}:\n'.format(addr))
