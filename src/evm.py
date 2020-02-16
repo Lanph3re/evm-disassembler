@@ -7,7 +7,6 @@ import struct
 class evm:
     def __init__(self, data):
         self.data = data
-
         self.stack = []
         self.pc = 0
 
@@ -20,6 +19,12 @@ class evm:
         #   @value [(from_address, cond), ...]
         self.blocks = {}
 
+        # self.block_input
+        #  @desc stack information when enters a block
+        #  @key start address of block
+        #  @value stack information
+        self.block_input = {}
+
         # self.visited
         #   @desc visited block information
         #   @key disassembled address
@@ -29,10 +34,9 @@ class evm:
         # self.fin_adrs
         #   @desc address that will be disassembled in linear disassemble algorithm
         self.fin_addrs = []
-        self.func_input = {}
 
         # self.func_list
-        #   @ function information
+        #   @desc function information
         #   @key address of function
         #   @value [num_args, num_retval, [return_addr, ...]]
         self.func_list = {0x0: [0, 0, [None]]}
@@ -196,6 +200,8 @@ class evm:
             entry = self.queue.get()
             self.pc = entry[0]
             self.stack = entry[1]
+            if self.stack is None:
+                continue
 
             # used for calculate the number of return values
             entry_stack_size = len(self.stack)
@@ -238,7 +244,7 @@ class evm:
 
                     # mark instruction following 'JUMPI' as new block
                     self.queue.put((self.pc, copy.deepcopy(self.stack)))
-                    self.func_input[self.pc] = copy.deepcopy(self.stack)
+                    self.block_input[self.pc] = copy.deepcopy(self.stack)
                     if self.pc not in self.blocks:
                         self.blocks[self.pc] = []
                     self.blocks[self.pc].append(
@@ -246,10 +252,11 @@ class evm:
 
                     # mark destination of 'JUMPI' as new block
                     self.queue.put((jump_addr, copy.deepcopy(self.stack)))
-                    self.func_input[jump_addr] = copy.deepcopy(self.stack)
+                    self.block_input[jump_addr] = copy.deepcopy(self.stack)
                     if jump_addr not in self.blocks:
                         self.blocks[jump_addr] = []
                     self.blocks[jump_addr].append((self.pc - 1, cond))
+
                     break
                 else:
                     # 'JUMP'
@@ -262,9 +269,19 @@ class evm:
                     if type(jump_addr) != int:
                         break
 
+                    # check if destination of 'JUMP' is return address
+                    # and get number of return values.
+                    for func_info in self.func_list.values():
+                        if jump_addr in func_info[2]:
+                            func_info[1] = len(self.stack) - entry_stack_size
+                            if jump_addr not in self.blocks:
+                                self.blocks[jump_addr] = []
+                            self.blocks[jump_addr].append(
+                                (self.pc - 1, None))
+
                     # mark destination of 'JUMP' as new block
                     self.queue.put((jump_addr, copy.deepcopy(self.stack)))
-                    self.func_input[jump_addr] = copy.deepcopy(self.stack)
+                    self.block_input[jump_addr] = copy.deepcopy(self.stack)
                     if jump_addr not in self.blocks:
                         self.blocks[jump_addr] = []
                     self.blocks[jump_addr].append((self.pc - 1, None))
@@ -276,23 +293,20 @@ class evm:
                         if jump_addr not in self.func_list:
                             num_args = len(self.stack) - ret_idx - 1
                             self.func_list[jump_addr] = [num_args, 0, []]
-                        self.queue.put((self.pc, copy.deepcopy(self.stack)))
-                        self.func_input[self.pc] = copy.deepcopy(
-                            self.stack)
+                            self.queue.put((self.pc, None))
+                        else:
+                            expected_result = copy.deepcopy(self.stack)
+                            for i in range(self.func_list[jump_addr][1]):
+                                expected_result.append('func_retval{}'.format(i + 1))
+                            self.queue.put((self.pc, expected_result))
+
+                            expected_result = copy.deepcopy(self.stack)
+                            for i in range(self.func_list[jump_addr][1]):
+                                expected_result.append('func_retval{}'.format(i + 1))
+                            self.block_input[self.pc] = expected_result
+
                         self.func_list[jump_addr][2].append(self.pc)
 
-                    # check if destination of 'JUMP' is return address
-                    # and get number of return values.
-                    # stack gets cleaned every 'JUMP' is executed,
-                    # so assume size of stack when function return
-                    # is the number of return values
-                    for func_info in self.func_list.values():
-                        if jump_addr in func_info[2]:
-                            func_info[1] = len(self.stack) - entry_stack_size
-                            if jump_addr not in self.blocks:
-                                self.blocks[jump_addr] = []
-                            self.blocks[jump_addr].append(
-                                (self.pc - 1, None))
                     break
 
     # do linear disassemble to find dead blocks
