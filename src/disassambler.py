@@ -9,24 +9,23 @@ if __name__ == '__main__':
     vm = evm.evm(data)
     vm.recursive_run()
     vm.linear_run()
-    vm.label_jumpdest()
 
-    instructions = sorted(vm.visited.items())
     with open('output', 'w') as output:
         output.write('Functions:\n')
-        func_list = sorted(vm.func_list.items())
-        for func, func_info in func_list:
+        for func, func_info in sorted(vm.func_list.items()):
             output.write(
-                '  func_{:04x}: num_args = {}, num_retval = {}\n'.format(func, func_info[0], func_info[1]))
+                '  func_{:04x}: num_args = {}, num_retval = {}\n'
+                .format(func, func_info[0], func_info[1]))
             if None in func_info[2]:
                 if func_info[1] == 0:
                     output.write('    NO RETURN(entry function)\n')
                 else:
                     output.write('    RETURN(contract function)\n')
             else:
-                ret_addrs = '{' + \
-                    ', '.join(
-                        list(map(lambda x: hex(x), sorted(func_info[2])))) + '}'
+                ret_addrs = '{' \
+                    + ', '.join(
+                        list(map(lambda x: hex(x), sorted(func_info[2])))) \
+                    + '}'
                 output.write('    returns to {}\n'.format(ret_addrs))
 
             output.write('\n')
@@ -34,7 +33,7 @@ if __name__ == '__main__':
         output.write('----------------------\n')
         output.write('Disassembly:\n')
         output.write('LABEL_0000:\n')
-        for addr, inst in instructions:
+        for addr, inst in sorted(vm.visited.items()):
             if addr in vm.blocks:
                 output.write('\nLABEL_{:04X}:\n'.format(addr))
                 for incoming in vm.blocks[addr]:

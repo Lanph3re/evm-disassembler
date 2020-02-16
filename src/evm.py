@@ -44,7 +44,7 @@ class evm:
         # opcode table
         with open('../rsrc/opcode.json', 'r') as opcode_json:
             self.table = {int(k): v for k, v in json.load(opcode_json).items()}
-        self.terminal = ['*STOP', '*RETURN', '*REVERT']
+        self.terminal_ops = ['*STOP', '*RETURN', '*REVERT']
         self.jump_ops = ['*JUMP', '*JUMPI']
 
         # function table
@@ -193,6 +193,16 @@ class evm:
             255: self.selfdestruct,
         }
 
+    # add new block, wrapper
+    def add_block(self, addr, value):
+        if addr not in self.blocks:
+            self.blocks[addr] = []
+        self.blocks[addr].append(value)
+
+    def add_block_input(self, addr, value):
+        if addr not in self.block_input:
+            self.block_input[addr] = value
+
     # recursive traversal disassemble
     def recursive_run(self):
         self.queue.put((0, []))
@@ -200,13 +210,12 @@ class evm:
             entry = self.queue.get()
             self.pc = entry[0]
             self.stack = entry[1]
-            if self.stack is None:
-                continue
 
-            # used for calculate the number of return values
-            entry_stack_size = len(self.stack)
-
-            while self.pc <= len(self.data) and self.pc not in self.visited:
+            while self.pc <= len(self.data):
+                if self.pc in self.visited:
+                    if self.pc in self.func_list:
+                        pass
+                    break
                 cur_op = self.data[self.pc]
 
                 # skip invalid opcode
@@ -225,8 +234,8 @@ class evm:
                     self.stack_func(cur_op)
 
                     # terminal instructions(stop, revert, return)
-                    # store instructions following terminal insts for future instrument
-                    if inst in self.terminal:
+                    #   store instructions following terminal insts for future instrument
+                    if inst in self.terminal_ops:
                         self.fin_addrs.append(self.pc)
                         break
                 elif inst == '*JUMPI':
@@ -237,29 +246,24 @@ class evm:
                         break
 
                     # heuristic: contract function detection
-                    # find entry point of each contract function
-                    # using pattern 'PUSH4, ..., JUMPI'
-                    if self.data[self.pc - 0xb] == 0x63 or self.data[self.pc - 0xa] == 0x63:
+                    #   find entry point of each contract function
+                    #   using pattern 'PUSH4, ..., JUMPI'
+                    if self.data[self.pc - 0xb] == 0x63 or \
+                       self.data[self.pc - 0xa] == 0x63:
                         self.func_list[jump_addr] = [0, 1, [None]]
 
                     # mark instruction following 'JUMPI' as new block
                     self.queue.put((self.pc, copy.deepcopy(self.stack)))
-                    self.block_input[self.pc] = copy.deepcopy(self.stack)
-                    if self.pc not in self.blocks:
-                        self.blocks[self.pc] = []
-                    self.blocks[self.pc].append(
-                        (self.pc - 1,  'not ' + cond))
+                    self.add_block(self.pc, (self.pc - 1, 'not ' + cond))
+                    self.add_block_input(self.pc, copy.deepcopy(self.stack))
 
                     # mark destination of 'JUMPI' as new block
                     self.queue.put((jump_addr, copy.deepcopy(self.stack)))
-                    self.block_input[jump_addr] = copy.deepcopy(self.stack)
-                    if jump_addr not in self.blocks:
-                        self.blocks[jump_addr] = []
-                    self.blocks[jump_addr].append((self.pc - 1, cond))
+                    self.add_block(jump_addr, (self.pc - 1, cond))
+                    self.add_block_input(jump_addr, copy.deepcopy(self.stack))
 
                     break
-                else:
-                    # 'JUMP'
+                else:  # 'JUMP'
                     jump_addr = self.jump()
 
                     # mark instruction following 'JUMP'
@@ -269,41 +273,51 @@ class evm:
                     if type(jump_addr) != int:
                         break
 
+                    # mark destination of 'JUMP' as new block
+                    #   if jump_addr is return address of some function,
+                    #   this code executed once per function
+                    self.queue.put((jump_addr, copy.deepcopy(self.stack)))
+                    self.add_block(jump_addr, (self.pc - 1, None))
+                    self.add_block_input(jump_addr, copy.deepcopy(self.stack))
+
                     # check if destination of 'JUMP' is return address
                     # and get number of return values.
+                    # this code executed once per function
                     for func_info in self.func_list.values():
                         if jump_addr in func_info[2]:
-                            func_info[1] = len(self.stack) - entry_stack_size
-                            if jump_addr not in self.blocks:
-                                self.blocks[jump_addr] = []
-                            self.blocks[jump_addr].append(
-                                (self.pc - 1, None))
-
-                    # mark destination of 'JUMP' as new block
-                    self.queue.put((jump_addr, copy.deepcopy(self.stack)))
-                    self.block_input[jump_addr] = copy.deepcopy(self.stack)
-                    if jump_addr not in self.blocks:
-                        self.blocks[jump_addr] = []
-                    self.blocks[jump_addr].append((self.pc - 1, None))
+                            # update the number of return values
+                            print('0x{:04x}: {} {}'.format(
+                                jump_addr,
+                                len(self.stack), func_info[3]))
+                            func_info[1] = len(self.stack) - func_info[3]
+                            func_info.pop()
 
                     # heuristic: function detection
-                    # check if address after 'JUMP' exists in stack
+                    #   check if address after 'JUMP' exists in stack
                     if self.pc in self.stack:
-                        ret_idx = self.stack.index(self.pc)
-                        if jump_addr not in self.func_list:
-                            num_args = len(self.stack) - ret_idx - 1
-                            self.func_list[jump_addr] = [num_args, 0, []]
-                            self.queue.put((self.pc, None))
+                        # case: function already in self.func_list
+                        #   each function will be disassembled only once,
+                        #   so return addresses of already disassembled function
+                        #   will not be added to analysis queue in code above.
+                        #   therefore should manually handle them properly
+                        if jump_addr in self.func_list:
+                            self.queue.put(
+                                (self.pc, copy.deepcopy(self.stack)))
+                            self.add_block(self.pc, (self.pc - 1, None))
+                            self.add_block_input(
+                                self.pc, copy.deepcopy(self.stack))
                         else:
-                            expected_result = copy.deepcopy(self.stack)
-                            for i in range(self.func_list[jump_addr][1]):
-                                expected_result.append('func_retval{}'.format(i + 1))
-                            self.queue.put((self.pc, expected_result))
-
-                            expected_result = copy.deepcopy(self.stack)
-                            for i in range(self.func_list[jump_addr][1]):
-                                expected_result.append('func_retval{}'.format(i + 1))
-                            self.block_input[self.pc] = expected_result
+                            # self.func[jump_addr][3] used for
+                            # analysing the nubmer of return values
+                            # used once, and deleted
+                            num_args = len(self.stack) - \
+                                self.stack.index(self.pc) - 1
+                            self.func_list[jump_addr] = [
+                                num_args,
+                                0,
+                                [],
+                                len(self.stack) - num_args - 1
+                            ]
 
                         self.func_list[jump_addr][2].append(self.pc)
 
@@ -318,7 +332,7 @@ class evm:
                 self.blocks[fin_addr].append((0xdeadbeef, None))
 
             self.pc = fin_addr
-            while self.pc not in self.visited:
+            while self.pc <= len(self.data) and self.pc not in self.visited:
                 cur_op = self.data[self.pc]
 
                 # skip invalid opcode
@@ -336,17 +350,6 @@ class evm:
                     imm_val = self.data[self.pc:self.pc + imm_width].hex()
                     self.visited[self.pc - 1] += ' 0x{}'.format(imm_val)
                     self.pc += imm_width
-
-                if self.pc > len(self.data):
-                    return
-
-    # find unlabeled 'JUMPDEST' instructions
-    def label_jumpdest(self):
-        for i in range(len(self.data)):
-            if self.data[i] not in self.table:
-                continue
-            if self.table[self.data[i]] == 'JUMPDEST' and i not in self.blocks:
-                self.blocks[i] = [(None, None)]
 
     def stack_pop(self):
         return self.stack.pop()
