@@ -246,12 +246,14 @@ class evm:
                                     'not ' + cond))
 
                     # skip indirect call
-                    if type(jump_addr) == int:
-                        # mark destination of 'JUMPI' as new block
-                        self.queue.put((jump_addr, copy.deepcopy(self.stack)))
-                        self.add_block(jump_addr,
-                                       ('// Incoming jump from 0x{:04X}'.format(self.pc - 1),
-                                        cond))
+                    if type(jump_addr) != int:
+                        continue
+
+                    # mark destination of 'JUMPI' as new block
+                    self.queue.put((jump_addr, copy.deepcopy(self.stack)))
+                    self.add_block(jump_addr,
+                                    ('// Incoming jump from 0x{:04X}'.format(self.pc - 1),
+                                    cond))
                 else:  # 'JUMP'
                     jump_addr = self.jump()
 
