@@ -199,28 +199,29 @@ class evm:
             self.blocks[addr] = []
         self.blocks[addr].append(value)
 
+    def get_new_analysis(self):
+        entry = self.queue.get()
+        self.pc = entry[0]
+        self.stack = entry[1]
+
     # recursive traversal disassemble
     def recursive_run(self):
         self.queue.put((0, []))
         while not self.queue.empty():
-            entry = self.queue.get()
-            self.pc = entry[0]
-            self.stack = entry[1]
+            self.get_new_analysis()
 
             while self.pc <= len(self.data) and self.pc not in self.visited:
                 cur_op = self.data[self.pc]
-
                 # skip invalid opcode
                 if cur_op not in self.table:
                     self.visited[self.pc] = 'INVALID'
-                    self.pc += 1
                     break
+                else:
+                    # mark current address as visited
+                    inst = self.table[cur_op]
+                    self.visited[self.pc] = inst
 
-                # mark current address as visited
-                inst = self.table[cur_op]
-                self.visited[self.pc] = inst
                 self.pc += 1
-
                 # execute current operation
                 if inst not in self.jump_ops:
                     self.stack_func(cur_op)
@@ -252,7 +253,7 @@ class evm:
                     # mark destination of 'JUMPI' as new block
                     self.queue.put((jump_addr, copy.deepcopy(self.stack)))
                     self.add_block(jump_addr,
-                                    ('// Incoming jump from 0x{:04X}'.format(self.pc - 1),
+                                   ('// Incoming jump from 0x{:04X}'.format(self.pc - 1),
                                     cond))
                 else:  # 'JUMP'
                     jump_addr = self.jump()
