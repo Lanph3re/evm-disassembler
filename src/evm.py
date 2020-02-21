@@ -305,8 +305,6 @@ class Evm:
 
             while self._pc <= len(self._data) and self._pc not in self.visited:
                 cur_op = self._data[self._pc]
-                if self._pc == 0x62E:
-                    print(self._stack)
                 # skip invalid opcode
                 if cur_op not in self._table:
                     self.visited[self._pc] = 'INVALID'
@@ -391,8 +389,6 @@ class Evm:
                             )
                         )
                         break
-        # print(self._deferred_analysis)
-        #assert len(self._deferred_analysis) == 0
 
     # do linear disassemble to find dead blocks
     def linear_run(self):
