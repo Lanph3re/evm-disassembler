@@ -1,7 +1,7 @@
-import evm
+from evm import Evm
 
 if __name__ == '__main__':
-    vm = evm.evm(bytes.fromhex(input('>> ')))
+    vm = Evm(bytes.fromhex(input('>> ')))
     vm.recursive_run()
     vm.linear_run()
 
@@ -9,11 +9,20 @@ if __name__ == '__main__':
         output.write('FUNCTIONS:\n\n')
         for func, func_info in sorted(vm.func_list.items()):
             output.write(
-                '  FUNC_{:04X}: NUM_ARGS = {}, NUM_RETVAL = {}\n'
-                .format(func, func_info[0], func_info[1]))
+                '  FUNC_{:04X}({}) -> ({})\n'
+                .format(
+                    func,
+                    ', '.join([
+                        'arg{}'.format(i) for i in range(func_info[0])
+                    ]),
+                    ', '.join([
+                        'r{}'.format(i) for i in range(func_info[1])
+                    ]) if func_info[1] != vm.FUNC_NOT_ANALYSED else '?'
+                )
+            )
 
         output.write(
-            '----------------------\n'
+            '\n---\n'
             'DISASSEMBLED RESULT:'
         )
         for addr, inst in sorted(vm.visited.items()):

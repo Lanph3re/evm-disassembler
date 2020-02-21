@@ -1,16 +1,18 @@
-import copy
+from copy import deepcopy
 import json
 import queue
 
 
-class evm:
+class Evm:
+    FUNC_NOT_ANALYSED = 0xFFFF
+
     def __init__(self, data):
-        self.data = data
-        self.stack = []
-        self.pc = 0
+        self._data = data
+        self._stack = []
+        self._pc = 0
 
         # queue used for recursive descent algorithm
-        self.queue = queue.Queue(maxsize=0)
+        self._queue = queue.Queue(maxsize=0)
 
         # self.blocks
         #   @desc basic block information
@@ -31,9 +33,9 @@ class evm:
         #   @value disassembled instruction
         self.visited = {}
 
-        # self.fin_adrs
+        # self._fin_addrs
         #   @desc address that will be disassembled in linear disassemble algorithm
-        self.fin_addrs = []
+        self._fin_addrs = []
 
         # self.func_list
         #   @desc function information
@@ -41,368 +43,467 @@ class evm:
         #   @value [num_args, num_retval]
         self.func_list = {0x0: [0, 0]}
 
+        # self._deferred_analysis
+        #   @desc return addresses of function
+        #         whose number of return values is unknown
+        #   @key address of function
+        #   @value [[return address, deepcopy of stack], ...]
+        self._deferred_analysis = {}
+
         # opcode table
         with open('../rsrc/opcode.json', 'r') as opcode_json:
-            self.table = {int(k): v for k, v in json.load(opcode_json).items()}
-        self.terminal_ops = ['*STOP', '*RETURN', '*REVERT']
-        self.jump_ops = ['*JUMP', '*JUMPI']
+            self._table = {
+                int(k): v for k, v in json.load(opcode_json).items()}
+        self._terminal_ops = ['*STOP', '*RETURN', '*REVERT']
+        self._jump_ops = ['*JUMP', '*JUMPI']
 
         # function table
-        self.opcodes_func = {
-            0: self.stop,
-            1: self.add,
-            2: self.mul,
-            3: self.sub,
-            4: self.div,
-            5: self.sdiv,
-            6: self.mod,
-            7: self.smod,
-            8: self.addmod,
-            9: self.mulmod,
-            10: self.exp,
-            11: self.signextend,
-            16: self.lt,
-            17: self.gt,
-            18: self.slt,
-            19: self.sgt,
-            20: self.eq,
-            21: self.iszero,
-            22: self.evm_and,
-            23: self.evm_or,
-            24: self.xor,
-            25: self.evm_not,
-            26: self.byte,
-            27: self.shl,
-            28: self.shr,
-            29: self.sar,
-            32: self.sha3,
-            48: self.address,
-            49: self.balance,
-            50: self.origin,
-            51: self.caller,
-            52: self.callvalue,
-            53: self.calldataload,
-            54: self.calldatasize,
-            55: self.calldatacopy,
-            56: self.codesize,
-            57: self.codecopy,
-            58: self.gasprice,
-            59: self.extcodesize,
-            60: self.extcodecopy,
-            61: self.returndatasize,
-            62: self.returndatacopy,
-            63: self.extcodehash,
-            64: self.blockhash,
-            65: self.coinbase,
-            66: self.timestamp,
-            67: self.number,
-            68: self.difficulty,
-            69: self.gaslimit,
-            80: self.pop,
-            81: self.mload,
-            82: self.mstore,
-            83: self.mstore8,
-            84: self.sload,
-            85: self.sstore,
-            86: self.jump,
-            87: self.jumpi,
-            88: self.evm_pc,
-            89: self.msize,
-            90: self.gas,
-            91: self.jumpdest,
-            96: self.push,
-            97: self.push,
-            98: self.push,
-            99: self.push,
-            100: self.push,
-            101: self.push,
-            102: self.push,
-            103: self.push,
-            104: self.push,
-            105: self.push,
-            106: self.push,
-            107: self.push,
-            108: self.push,
-            109: self.push,
-            110: self.push,
-            111: self.push,
-            112: self.push,
-            113: self.push,
-            114: self.push,
-            115: self.push,
-            116: self.push,
-            117: self.push,
-            118: self.push,
-            119: self.push,
-            120: self.push,
-            121: self.push,
-            122: self.push,
-            123: self.push,
-            124: self.push,
-            125: self.push,
-            126: self.push,
-            127: self.push,
-            128: self.dup,
-            129: self.dup,
-            130: self.dup,
-            131: self.dup,
-            132: self.dup,
-            133: self.dup,
-            134: self.dup,
-            135: self.dup,
-            136: self.dup,
-            137: self.dup,
-            138: self.dup,
-            139: self.dup,
-            140: self.dup,
-            141: self.dup,
-            142: self.dup,
-            143: self.dup,
-            144: self.swap,
-            145: self.swap,
-            146: self.swap,
-            147: self.swap,
-            148: self.swap,
-            149: self.swap,
-            150: self.swap,
-            151: self.swap,
-            152: self.swap,
-            153: self.swap,
-            154: self.swap,
-            155: self.swap,
-            156: self.swap,
-            157: self.swap,
-            158: self.swap,
-            159: self.swap,
-            160: self.log,
-            161: self.log,
-            162: self.log,
-            163: self.log,
-            164: self.log,
-            176: self.push,
-            177: self.dup,
-            178: self.swap,
-            240: self.create,
-            241: self.call,
-            242: self.callcode,
-            243: self.evm_return,
-            244: self.delegatecall,
-            245: self.create2,
-            250: self.staticcall,
-            253: self.revert,
-            255: self.selfdestruct,
+        self._opcodes_func = {
+            0: self._stop,
+            1: self._add,
+            2: self._mul,
+            3: self._sub,
+            4: self._div,
+            5: self._sdiv,
+            6: self._mod,
+            7: self._smod,
+            8: self._addmod,
+            9: self._mulmod,
+            10: self._exp,
+            11: self._signextend,
+            16: self._lt,
+            17: self._gt,
+            18: self._slt,
+            19: self._sgt,
+            20: self._eq,
+            21: self._iszero,
+            22: self._evm_and,
+            23: self._evm_or,
+            24: self._xor,
+            25: self._evm_not,
+            26: self._byte,
+            27: self._shl,
+            28: self._shr,
+            29: self._sar,
+            32: self._sha3,
+            48: self._address,
+            49: self._balance,
+            50: self._origin,
+            51: self._caller,
+            52: self._callvalue,
+            53: self._calldataload,
+            54: self._calldatasize,
+            55: self._calldatacopy,
+            56: self._codesize,
+            57: self._codecopy,
+            58: self._gasprice,
+            59: self._extcodesize,
+            60: self._extcodecopy,
+            61: self._returndatasize,
+            62: self._returndatacopy,
+            63: self._extcodehash,
+            64: self._blockhash,
+            65: self._coinbase,
+            66: self._timestamp,
+            67: self._number,
+            68: self._difficulty,
+            69: self._gaslimit,
+            80: self._pop,
+            81: self._mload,
+            82: self._mstore,
+            83: self._mstore8,
+            84: self._sload,
+            85: self._sstore,
+            86: self._jump,
+            87: self._jumpi,
+            88: self._evm_pc,
+            89: self._msize,
+            90: self._gas,
+            91: self._jumpdest,
+            96: self._push,
+            97: self._push,
+            98: self._push,
+            99: self._push,
+            100: self._push,
+            101: self._push,
+            102: self._push,
+            103: self._push,
+            104: self._push,
+            105: self._push,
+            106: self._push,
+            107: self._push,
+            108: self._push,
+            109: self._push,
+            110: self._push,
+            111: self._push,
+            112: self._push,
+            113: self._push,
+            114: self._push,
+            115: self._push,
+            116: self._push,
+            117: self._push,
+            118: self._push,
+            119: self._push,
+            120: self._push,
+            121: self._push,
+            122: self._push,
+            123: self._push,
+            124: self._push,
+            125: self._push,
+            126: self._push,
+            127: self._push,
+            128: self._dup,
+            129: self._dup,
+            130: self._dup,
+            131: self._dup,
+            132: self._dup,
+            133: self._dup,
+            134: self._dup,
+            135: self._dup,
+            136: self._dup,
+            137: self._dup,
+            138: self._dup,
+            139: self._dup,
+            140: self._dup,
+            141: self._dup,
+            142: self._dup,
+            143: self._dup,
+            144: self._swap,
+            145: self._swap,
+            146: self._swap,
+            147: self._swap,
+            148: self._swap,
+            149: self._swap,
+            150: self._swap,
+            151: self._swap,
+            152: self._swap,
+            153: self._swap,
+            154: self._swap,
+            155: self._swap,
+            156: self._swap,
+            157: self._swap,
+            158: self._swap,
+            159: self._swap,
+            160: self._log,
+            161: self._log,
+            162: self._log,
+            163: self._log,
+            164: self._log,
+            176: self._push,
+            177: self._dup,
+            178: self._swap,
+            240: self._create,
+            241: self._call,
+            242: self._callcode,
+            243: self._evm_return,
+            244: self._delegatecall,
+            245: self._create2,
+            250: self._staticcall,
+            253: self._revert,
+            255: self._selfdestruct,
         }
 
-    # add new block, wrapper
-    def add_block(self, addr, value):
-        if addr not in self.blocks:
-            self.blocks[addr] = []
-        self.blocks[addr].append(value)
+    # insert a value in list which is value of dictionary, wrapper
+    def _insert_entry_list_dict(self, dict, k, v):
+        if k not in dict:
+            dict[k] = []
+        dict[k].append(v)
 
-    def get_new_analysis(self):
-        entry = self.queue.get()
-        self.pc = entry[0]
-        self.stack = entry[1]
+    def _get_new_analysis_entry(self):
+        entry = self._queue.get()
+        self._pc = entry[0]
+        self._stack = entry[1]
+
+    # heuristic: function detection
+    def _is_function(self, addr):
+        if self._pc not in self._stack:
+            return False
+
+        # detect new function
+        if addr not in self.func_list:
+            self.func_list[addr] = [
+                (len(self._stack) - self._stack.index(self._pc) - 1),
+                self.FUNC_NOT_ANALYSED,
+            ]
+
+            # push the address of function in analysis queue
+            self._queue.put((addr, deepcopy(self._stack)))
+
+        # mark function and its return address as new block
+        self._insert_entry_list_dict(
+            self.blocks,
+            addr,
+            (
+                '// Incoming call from 0x{:04X}, returns to 0x{:04X}'.format(
+                    self._pc - 1, self._pc),
+                None
+            )
+        )
+        self._insert_entry_list_dict(
+            self.blocks,
+            self._pc,
+            (
+                '// Incoming return from call to 0x{:04X} at 0x{:04X}'.format(
+                    addr, self._pc - 1),
+                None
+            )
+        )
+
+        # defer disassemble until the number of return values is figured out
+        if self.func_list[addr][1] == self.FUNC_NOT_ANALYSED:
+            self._insert_entry_list_dict(
+                self._deferred_analysis,
+                addr,
+                [
+                    self._pc,
+                    deepcopy(self._stack)[
+                        :-(self.func_list[addr][0] + 1)]
+                ]
+            )
+        else:  # push return values in stack and continue
+            for _ in range(self.func_list[addr][0] + 1):
+                self._stack.pop()
+            self._stack += [
+                'RETURN_VALUE_{}'.format(i)
+                for i in range(self.func_list[addr][1])
+            ]
+            self._queue.put((self._pc, deepcopy(self._stack)))
+
+        return True
+
+    def _process_deferred(self, addr):
+        # process deferred entries
+        for k, v in self._deferred_analysis.items():
+            for ret, stack in v:
+                if ret == addr:
+                    # calculate the number of return values
+                    self.func_list[k][1] = \
+                        len(self._stack) - len(stack)
+
+                    # heuristic: duplicate return address
+                    #   if return address is duplicated value from stack,
+                    #   take that into consideration
+                    if addr in self._stack:
+                        self.func_list[k][1] -= 1
+
+                    for e in v:
+                        e[1] += [
+                            'RETURN_VALUE_{}'.format(i)
+                            for i in range(self.func_list[k][1])
+                        ]
+                        self._queue.put(e)
+
+                    del self._deferred_analysis[k]
+                    return True
+        return False
 
     # recursive traversal disassemble
     def recursive_run(self):
-        self.queue.put((0, []))
-        while not self.queue.empty():
-            self.get_new_analysis()
+        self._queue.put((0, []))
+        while not self._queue.empty():
+            self._get_new_analysis_entry()
 
-            while self.pc <= len(self.data) and self.pc not in self.visited:
-                cur_op = self.data[self.pc]
+            while self._pc <= len(self._data) and self._pc not in self.visited:
+                cur_op = self._data[self._pc]
+                if self._pc == 0x62E:
+                    print(self._stack)
                 # skip invalid opcode
-                if cur_op not in self.table:
-                    self.visited[self.pc] = 'INVALID'
+                if cur_op not in self._table:
+                    self.visited[self._pc] = 'INVALID'
                     break
                 else:
                     # mark current address as visited
-                    inst = self.table[cur_op]
-                    self.visited[self.pc] = inst
+                    inst = self._table[cur_op]
+                    self.visited[self._pc] = inst
 
-                self.pc += 1
+                self._pc += 1
                 # execute current operation
-                if inst not in self.jump_ops:
-                    self.stack_func(cur_op)
+                if inst not in self._jump_ops:
+                    self._stack_func(cur_op)
 
                     # terminal instructions(stop, revert, return)
                     #   store instructions following terminal insts for future instrument
-                    if inst in self.terminal_ops:
-                        self.fin_addrs.append(self.pc)
+                    if inst in self._terminal_ops:
+                        self._fin_addrs.append(self._pc)
                         break
                 elif inst == '*JUMPI':
-                    jump_addr, cond = self.jumpi()
+                    jump_addr, cond = self._jumpi()
 
                     # heuristic: contract function detection
                     #   find entry point of each contract function
                     #   using pattern 'PUSH4, ..., JUMPI'
-                    if self.data[self.pc - 0xb] == 0x63 or \
-                       self.data[self.pc - 0xa] == 0x63:
-                        self.func_list[jump_addr] = [0, 1, [None]]
+                    if self._data[self._pc - 0xb] == 0x63 or \
+                       self._data[self._pc - 0xa] == 0x63:
+                        self.func_list[jump_addr] = [0, 1]
 
                     # mark instruction following 'JUMPI' as new block
-                    self.add_block(self.pc,
-                                   ('// Incoming jump from 0x{:04X}'.format(self.pc - 1),
-                                    'not ' + cond))
+                    self._insert_entry_list_dict(
+                        self.blocks,
+                        self._pc,
+                        (
+                            '// Incoming jump from 0x{:04X}'.format(
+                                self._pc - 1),
+                            'not ' + cond
+                        )
+                    )
 
                     # skip indirect call
                     if type(jump_addr) != int:
                         continue
 
                     # mark destination of 'JUMPI' as new block
-                    self.queue.put((jump_addr, copy.deepcopy(self.stack)))
-                    self.add_block(jump_addr,
-                                   ('// Incoming jump from 0x{:04X}'.format(self.pc - 1),
-                                    cond))
+                    self._queue.put((jump_addr, deepcopy(self._stack)))
+                    self._insert_entry_list_dict(
+                        self.blocks,
+                        jump_addr,
+                        (
+                            '// Incoming jump from 0x{:04X}'.format(
+                                self._pc - 1),
+                            cond
+                        )
+                    )
                 else:  # 'JUMP'
-                    jump_addr = self.jump()
+                    jump_addr = self._jump()
 
-                    # heuristic: function detection
-                    if self.pc in self.stack:
-                        if jump_addr not in self.func_list:
-                            self.func_list[jump_addr] = [
-                                (len(self.stack) - self.stack.index(self.pc) - 1),
-                                0,
-                            ]
-
-                        self.queue.put((jump_addr, copy.deepcopy(self.stack)))
-                        self.add_block(jump_addr,
-                                       ('// Incoming call from 0x{:04X}, returns to 0x{:04X}'.format(self.pc - 1, self.pc),
-                                        None))
-                        self.add_block(self.pc,
-                                       ('// Incoming return from call to 0x{:04X} at 0x{:04X}'.format(jump_addr, self.pc - 1),
-                                        None))
-                        # TODO: instruction following function call should have return values..
+                    if self._is_function(jump_addr):
+                        break
                     else:  # simple jump
-                        # uncertain instruction following unconditional jump is executable code
-                        self.fin_addrs.append(self.pc)
+                        # we don't know instruction following
+                        # unconditional jump is executable code
+                        self._fin_addrs.append(self._pc)
 
                         # skip indirect call
                         if type(jump_addr) != int:
                             break
 
-                        # mark destination of 'JUMP' as new block
-                        self.queue.put((jump_addr, copy.deepcopy(self.stack)))
+                        if self._process_deferred(jump_addr):
+                            break
 
-                        # if jump_addr is return address of some function,
-                        # the address will be already in self.visited
-                        if jump_addr not in self.visited:
-                            self.add_block(jump_addr,
-                                           ('// Incoming jump from 0x{:04X}'.format(self.pc - 1),
-                                            None))
+                        # mark destination of 'JUMP' as new block
+                        self._queue.put((jump_addr, deepcopy(self._stack)))
+                        self._insert_entry_list_dict(
+                            self.blocks,
+                            jump_addr,
+                            (
+                                '// Incoming jump from 0x{:04X}'.format(
+                                    self._pc - 1),
+                                None
+                            )
+                        )
                         break
+        # print(self._deferred_analysis)
+        #assert len(self._deferred_analysis) == 0
 
     # do linear disassemble to find dead blocks
     def linear_run(self):
-        for fin_addr in self.fin_addrs:
+        for fin_addr in self._fin_addrs:
             if fin_addr not in self.visited:
                 self.blocks[fin_addr] = [('// DEAD BLOCK', None)]
 
-            self.pc = fin_addr
-            while self.pc <= len(self.data) and self.pc not in self.visited:
-                cur_op = self.data[self.pc]
+            self._pc = fin_addr
+            while self._pc <= len(self._data) and self._pc not in self.visited:
+                cur_op = self._data[self._pc]
 
                 # skip invalid opcode
-                if cur_op not in self.table:
-                    self.visited[self.pc] = 'INVALID'
-                    self.pc += 1
+                if cur_op not in self._table:
+                    self.visited[self._pc] = 'INVALID'
+                    self._pc += 1
                     continue
 
-                inst = self.table[self.data[self.pc]]
-                self.visited[self.pc] = inst
-                self.pc += 1
+                inst = self._table[self._data[self._pc]]
+                self.visited[self._pc] = inst
+                self._pc += 1
 
                 if inst.startswith('PUSH'):
                     imm_width = int(inst[4:])
-                    imm_val = self.data[self.pc:self.pc + imm_width].hex()
-                    self.visited[self.pc - 1] += ' 0x{}'.format(imm_val)
-                    self.pc += imm_width
+                    imm_val = self._data[self._pc:self._pc + imm_width].hex()
+                    self.visited[self._pc - 1] += ' 0x{}'.format(imm_val)
+                    self._pc += imm_width
 
-    def stack_pop(self):
-        return self.stack.pop()
+    def _stack_pop(self):
+        return self._stack.pop()
 
     # stack related
-    def stack_func(self, op):
-        self.opcodes_func[op]()
+    def _stack_func(self, op):
+        self._opcodes_func[op]()
 
-    def stop(self):
+    def _stop(self):
         return
 
-    def add(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
+    def _add(self):
+        operand_1 = self._stack_pop()
+        operand_2 = self._stack_pop()
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
         if type(operand_2) == int:
             operand_2 = hex(operand_2)
 
-        self.stack.append('{} + {}'.format(operand_1, operand_2))
+        self._stack.append('{} + {}'.format(operand_1, operand_2))
 
-    def mul(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
+    def _mul(self):
+        operand_1 = self._stack_pop()
+        operand_2 = self._stack_pop()
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
         if type(operand_2) == int:
             operand_2 = hex(operand_2)
 
-        self.stack.append('{} * {}'.format(operand_1, operand_2))
+        self._stack.append('{} * {}'.format(operand_1, operand_2))
 
-    def sub(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
+    def _sub(self):
+        operand_1 = self._stack_pop()
+        operand_2 = self._stack_pop()
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
         if type(operand_2) == int:
             operand_2 = hex(operand_2)
 
-        self.stack.append('{} - {}'.format(operand_1, operand_2))
+        self._stack.append('{} - {}'.format(operand_1, operand_2))
 
-    def div(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
+    def _div(self):
+        operand_1 = self._stack_pop()
+        operand_2 = self._stack_pop()
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
         if type(operand_2) == int:
             operand_2 = hex(operand_2)
 
-        self.stack.append('{} / {}'.format(operand_1, operand_2))
+        self._stack.append('{} / {}'.format(operand_1, operand_2))
 
-    def sdiv(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
+    def _sdiv(self):
+        operand_1 = self._stack_pop()
+        operand_2 = self._stack_pop()
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
         if type(operand_2) == int:
             operand_2 = hex(operand_2)
 
-        self.stack.append('{} / {}'.format(operand_1, operand_2))
+        self._stack.append('{} / {}'.format(operand_1, operand_2))
 
-    def mod(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
+    def _mod(self):
+        operand_1 = self._stack_pop()
+        operand_2 = self._stack_pop()
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
         if type(operand_2) == int:
             operand_2 = hex(operand_2)
 
-        self.stack.append('{} % {}'.format(operand_1, operand_2))
+        self._stack.append('{} % {}'.format(operand_1, operand_2))
 
-    def smod(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
+    def _smod(self):
+        operand_1 = self._stack_pop()
+        operand_2 = self._stack_pop()
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
         if type(operand_2) == int:
             operand_2 = hex(operand_2)
 
-        self.stack.append('{} % {}'.format(operand_1, operand_2))
+        self._stack.append('{} % {}'.format(operand_1, operand_2))
 
-    def addmod(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
-        operand_3 = self.stack_pop()
+    def _addmod(self):
+        operand_1 = self._stack_pop()
+        operand_2 = self._stack_pop()
+        operand_3 = self._stack_pop()
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
         if type(operand_2) == int:
@@ -410,13 +511,13 @@ class evm:
         if type(operand_3) == int:
             operand_3 = hex(operand_3)
 
-        self.stack.append(
+        self._stack.append(
             '({} + {}) % {}'.format(operand_1, operand_2, operand_3))
 
-    def mulmod(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
-        operand_3 = self.stack_pop()
+    def _mulmod(self):
+        operand_1 = self._stack_pop()
+        operand_2 = self._stack_pop()
+        operand_3 = self._stack_pop()
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
         if type(operand_2) == int:
@@ -424,157 +525,157 @@ class evm:
         if type(operand_3) == int:
             operand_3 = hex(operand_3)
 
-        self.stack.append(
+        self._stack.append(
             '({} * {}) % {}'.format(operand_1, operand_2, operand_3))
 
-    def exp(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
+    def _exp(self):
+        operand_1 = self._stack_pop()
+        operand_2 = self._stack_pop()
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
         if type(operand_2) == int:
             operand_2 = hex(operand_2)
 
-        self.stack.append('{} ** {}'.format(operand_1, operand_2))
+        self._stack.append('{} ** {}'.format(operand_1, operand_2))
 
-    def signextend(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
+    def _signextend(self):
+        operand_1 = self._stack_pop()
+        operand_2 = self._stack_pop()
         if type(operand_2) == int:
             operand_2 = hex(operand_2)
 
-        self.stack.append('SIGNEXTEND({}, {})'.format(operand_1, operand_2))
+        self._stack.append('SIGNEXTEND({}, {})'.format(operand_1, operand_2))
 
-    def lt(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
+    def _lt(self):
+        operand_1 = self._stack_pop()
+        operand_2 = self._stack_pop()
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
         if type(operand_2) == int:
             operand_2 = hex(operand_2)
 
-        self.stack.append('{} < {}'.format(operand_1, operand_2))
+        self._stack.append('{} < {}'.format(operand_1, operand_2))
 
-    def gt(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
+    def _gt(self):
+        operand_1 = self._stack_pop()
+        operand_2 = self._stack_pop()
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
         if type(operand_2) == int:
             operand_2 = hex(operand_2)
 
-        self.stack.append('{} > {}'.format(operand_1, operand_2))
+        self._stack.append('{} > {}'.format(operand_1, operand_2))
 
-    def slt(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
+    def _slt(self):
+        operand_1 = self._stack_pop()
+        operand_2 = self._stack_pop()
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
         if type(operand_2) == int:
             operand_2 = hex(operand_2)
 
-        self.stack.append('{} < {}'.format(operand_1, operand_2))
+        self._stack.append('{} < {}'.format(operand_1, operand_2))
 
-    def sgt(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
+    def _sgt(self):
+        operand_1 = self._stack_pop()
+        operand_2 = self._stack_pop()
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
         if type(operand_2) == int:
             operand_2 = hex(operand_2)
 
-        self.stack.append('{} > {}'.format(operand_1, operand_2))
+        self._stack.append('{} > {}'.format(operand_1, operand_2))
 
-    def eq(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
+    def _eq(self):
+        operand_1 = self._stack_pop()
+        operand_2 = self._stack_pop()
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
         if type(operand_2) == int:
             operand_2 = hex(operand_2)
 
-        self.stack.append('{} == {}'.format(operand_1, operand_2))
+        self._stack.append('{} == {}'.format(operand_1, operand_2))
 
-    def iszero(self):
-        operand_1 = self.stack_pop()
+    def _iszero(self):
+        operand_1 = self._stack_pop()
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
 
-        self.stack.append('{} == 0'.format(operand_1))
+        self._stack.append('{} == 0'.format(operand_1))
 
-    def evm_and(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
-        if type(operand_1) == int:
-            operand_1 = hex(operand_1)
-        if type(operand_2) == int:
-            operand_2 = hex(operand_2)
-
-        self.stack.append('{} & {}'.format(operand_1, operand_2))
-
-    def evm_or(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
+    def _evm_and(self):
+        operand_1 = self._stack_pop()
+        operand_2 = self._stack_pop()
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
         if type(operand_2) == int:
             operand_2 = hex(operand_2)
 
-        self.stack.append('{} | {}'.format(operand_1, operand_2))
+        self._stack.append('{} & {}'.format(operand_1, operand_2))
 
-    def xor(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
+    def _evm_or(self):
+        operand_1 = self._stack_pop()
+        operand_2 = self._stack_pop()
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
         if type(operand_2) == int:
             operand_2 = hex(operand_2)
 
-        self.stack.append('{} ^ {}'.format(operand_1, operand_2))
+        self._stack.append('{} | {}'.format(operand_1, operand_2))
 
-    def evm_not(self):
-        operand_1 = self.stack_pop()
+    def _xor(self):
+        operand_1 = self._stack_pop()
+        operand_2 = self._stack_pop()
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
-
-        self.stack.append('~{}'.format(operand_1))
-
-    def byte(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
         if type(operand_2) == int:
             operand_2 = hex(operand_2)
 
-        self.stack.append(
+        self._stack.append('{} ^ {}'.format(operand_1, operand_2))
+
+    def _evm_not(self):
+        operand_1 = self._stack_pop()
+        if type(operand_1) == int:
+            operand_1 = hex(operand_1)
+
+        self._stack.append('~{}'.format(operand_1))
+
+    def _byte(self):
+        operand_1 = self._stack_pop()
+        operand_2 = self._stack_pop()
+        if type(operand_2) == int:
+            operand_2 = hex(operand_2)
+
+        self._stack.append(
             '({} >> (248 - {} * 8)) & 0xFF)'.format(operand_2, operand_1))
 
-    def shl(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
+    def _shl(self):
+        operand_1 = self._stack_pop()
+        operand_2 = self._stack_pop()
         if type(operand_2) == int:
             operand_2 = hex(operand_2)
 
-        self.stack.append('{} << {}'.format(operand_2, operand_1))
+        self._stack.append('{} << {}'.format(operand_2, operand_1))
 
-    def shr(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
+    def _shr(self):
+        operand_1 = self._stack_pop()
+        operand_2 = self._stack_pop()
         if type(operand_2) == int:
             operand_2 = hex(operand_2)
 
-        self.stack.append('{} >> {}'.format(operand_2, operand_1))
+        self._stack.append('{} >> {}'.format(operand_2, operand_1))
 
-    def sar(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
+    def _sar(self):
+        operand_1 = self._stack_pop()
+        operand_2 = self._stack_pop()
         if type(operand_2) == int:
             operand_2 = hex(operand_2)
 
-        self.stack.append('{} >> {}'.format(operand_2, operand_1))
+        self._stack.append('{} >> {}'.format(operand_2, operand_1))
 
-    def sha3(self):
-        operand_1 = self.stack_pop()
-        operand_2 = self.stack_pop()
+    def _sha3(self):
+        operand_1 = self._stack_pop()
+        operand_2 = self._stack_pop()
         if type(operand_1) == int and type(operand_2) == int:
             operand_2 = hex(operand_1 + operand_2)
             operand_1 = hex(operand_1)
@@ -586,180 +687,181 @@ class evm:
         else:
             pass
 
-        self.stack.append(
+        self._stack.append(
             'hash(memory[{}:{}])'.format(operand_1, operand_2))
 
-    def address(self):
-        self.stack.append('address(\'this\')')
+    def _address(self):
+        self._stack.append('address(\'this\')')
 
-    def balance(self):
-        operand_1 = self.stack_pop()
+    def _balance(self):
+        operand_1 = self._stack_pop()
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
 
-        self.stack.append('address(' + operand_1 + ').balance')
+        self._stack.append('address(' + operand_1 + ').balance')
 
-    def origin(self):
-        self.stack.append('tx.origin')
+    def _origin(self):
+        self._stack.append('tx.origin')
 
-    def caller(self):
-        self.stack.append('msg.caller')
+    def _caller(self):
+        self._stack.append('msg.caller')
 
-    def callvalue(self):
-        self.stack.append('msg.value')
+    def _callvalue(self):
+        self._stack.append('msg.value')
 
-    def calldataload(self):
-        operand_1 = self.stack_pop()
+    def _calldataload(self):
+        operand_1 = self._stack_pop()
         if type(operand_1) == int:
             operand_2 = hex(operand_1 + 0x20)
             operand_1 = hex(operand_1)
         else:
             operand_2 = operand_1 + ' + 0x20'
 
-        self.stack.append('msg.data[{}:{}]'.format(
+        self._stack.append('msg.data[{}:{}]'.format(
             operand_1, operand_2))
 
-    def calldatasize(self):
-        self.stack.append('msg.data.size')
+    def _calldatasize(self):
+        self._stack.append('msg.data.size')
 
-    def calldatacopy(self):
+    def _calldatacopy(self):
         for _ in range(3):
-            self.stack_pop()
+            self._stack_pop()
 
-    def codesize(self):
-        self.stack.append('address(this).code.size')
+    def _codesize(self):
+        self._stack.append('address(this).code.size')
 
-    def codecopy(self):
+    def _codecopy(self):
         for _ in range(3):
-            self.stack_pop()
+            self._stack_pop()
 
-    def gasprice(self):
-        self.stack.append('tx.gasprice')
+    def _gasprice(self):
+        self._stack.append('tx.gasprice')
 
-    def extcodesize(self):
-        operand_1 = self.stack_pop()
+    def _extcodesize(self):
+        operand_1 = self._stack_pop()
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
 
-        self.stack.append('address({}).code.size'.format(operand_1))
+        self._stack.append('address({}).code.size'.format(operand_1))
 
-    def extcodecopy(self):
+    def _extcodecopy(self):
         for _ in range(4):
-            self.stack_pop()
+            self._stack_pop()
 
-    def returndatasize(self):
-        self.stack.append('RETURNDATASIZE()')
+    def _returndatasize(self):
+        self._stack.append('RETURNDATASIZE()')
 
-    def returndatacopy(self):
+    def _returndatacopy(self):
         for _ in range(3):
-            self.stack_pop()
+            self._stack_pop()
 
-    def extcodehash(self):
-        operand_1 = self.stack_pop()
+    def _extcodehash(self):
+        operand_1 = self._stack_pop()
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
 
-        self.stack.append('extcodehash({}'.format(operand_1))
+        self._stack.append('extcodehash({}'.format(operand_1))
 
-    def blockhash(self):
-        operand_1 = self.stack_pop()
+    def _blockhash(self):
+        operand_1 = self._stack_pop()
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
 
-        self.stack.append('block.blockHash({})'.format(operand_1))
+        self._stack.append('block.blockHash({})'.format(operand_1))
 
-    def coinbase(self):
-        self.stack.append('block.coinbase')
+    def _coinbase(self):
+        self._stack.append('block.coinbase')
 
-    def timestamp(self):
-        self.stack.append('block.timestamp')
+    def _timestamp(self):
+        self._stack.append('block.timestamp')
 
-    def number(self):
-        self.stack.append('block.number')
+    def _number(self):
+        self._stack.append('block.number')
 
-    def difficulty(self):
-        self.stack.append('block.difficulty')
+    def _difficulty(self):
+        self._stack.append('block.difficulty')
 
-    def gaslimit(self):
-        self.stack.append('block.gaslimit')
+    def _gaslimit(self):
+        self._stack.append('block.gaslimit')
 
-    def pop(self):
-        self.stack_pop()
+    def _pop(self):
+        self._stack_pop()
 
-    def mload(self):
-        operand_1 = self.stack_pop()
+    def _mload(self):
+        operand_1 = self._stack_pop()
         if type(operand_1) == int:
             operand_2 = hex(operand_1 + 0x20)
             operand_1 = hex(operand_1)
         else:
             operand_2 = operand_1 + ' + 0x20'
 
-        self.stack.append('memory[{}:{}]'.format(
+        self._stack.append('memory[{}:{}]'.format(
             operand_1, operand_2))
 
-    def mstore(self):
+    def _mstore(self):
         for _ in range(2):
-            self.stack_pop()
+            self._stack_pop()
 
-    def mstore8(self):
+    def _mstore8(self):
         for _ in range(2):
-            self.stack_pop()
+            self._stack_pop()
 
-    def sload(self):
-        operand_1 = self.stack_pop()
+    def _sload(self):
+        operand_1 = self._stack_pop()
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
 
-        self.stack.append('storage[{}]'.format(operand_1))
+        self._stack.append('storage[{}]'.format(operand_1))
 
-    def sstore(self):
+    def _sstore(self):
         for _ in range(2):
-            self.stack_pop()
+            self._stack_pop()
 
-    def jump(self):
-        return self.stack_pop()
+    def _jump(self):
+        return self._stack_pop()
 
-    def jumpi(self):
-        destination = self.stack_pop()
-        condition = self.stack_pop()
+    def _jumpi(self):
+        destination = self._stack_pop()
+        condition = self._stack_pop()
         return (destination, condition)
 
-    def evm_pc(self):
-        self.stack.append('$pc')
+    def _evm_pc(self):
+        self._stack.append('$pc')
 
-    def msize(self):
-        self.stack.append('MSIZE()')
+    def _msize(self):
+        self._stack.append('MSIZE()')
 
-    def gas(self):
-        self.stack.append('GAS()')
+    def _gas(self):
+        self._stack.append('GAS()')
 
-    def jumpdest(self):
+    def _jumpdest(self):
         return
 
-    def push(self):
-        imm_width = int(self.table[self.data[self.pc - 1]][4:])
-        imm_val = self.data[self.pc:self.pc+imm_width].hex()
-        self.visited[self.pc - 1] += ' 0x{}'.format(imm_val)
-        self.stack.append(int(imm_val, 16))
-        self.pc += imm_width
+    def _push(self):
+        imm_width = int(self._table[self._data[self._pc - 1]][4:])
+        imm_val = self._data[self._pc:self._pc+imm_width].hex()
+        self.visited[self._pc - 1] += ' 0x{}'.format(imm_val)
+        self._stack.append(int(imm_val, 16))
+        self._pc += imm_width
 
-    def dup(self):
-        idx = int(self.table[self.data[self.pc - 1]][3:])
-        self.stack.append(self.stack[-idx])
+    def _dup(self):
+        idx = int(self._table[self._data[self._pc - 1]][3:])
+        self._stack.append(self._stack[-idx])
 
-    def swap(self):
-        idx = int(self.table[self.data[self.pc - 1]][4:])
-        self.stack[-idx - 1], self.stack[-1] = self.stack[-1], self.stack[-idx - 1]
+    def _swap(self):
+        idx = int(self._table[self._data[self._pc - 1]][4:])
+        self._stack[-idx -
+                    1], self._stack[-1] = self._stack[-1], self._stack[-idx - 1]
 
-    def log(self):
-        idx = int(self.table[self.data[self.pc - 1]][3:])
+    def _log(self):
+        idx = int(self._table[self._data[self._pc - 1]][3:])
         for _ in range(2 + idx):
-            self.stack_pop()
+            self._stack_pop()
 
-    def create(self):
-        operand_1 = self.stack_pop()  # value
-        operand_2 = self.stack_pop()  # offset
-        operand_3 = self.stack_pop()  # length
+    def _create(self):
+        operand_1 = self._stack_pop()  # value
+        operand_2 = self._stack_pop()  # offset
+        operand_3 = self._stack_pop()  # length
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
         if type(operand_2) == int and type(operand_3) == int:
@@ -773,14 +875,14 @@ class evm:
         else:
             pass
 
-        self.stack.append('new memory[{}:{}].value({})'.format(
+        self._stack.append('new memory[{}:{}].value({})'.format(
             operand_2, operand_3, operand_1))
 
-    def create2(self):
-        operand_1 = self.stack_pop()  # value
-        operand_2 = self.stack_pop()  # offset
-        operand_3 = self.stack_pop()  # length
-        self.stack_pop()  # salt
+    def _create2(self):
+        operand_1 = self._stack_pop()  # value
+        operand_2 = self._stack_pop()  # offset
+        operand_3 = self._stack_pop()  # length
+        self._stack_pop()  # salt
         if type(operand_1) == int:
             operand_1 = hex(operand_1)
         if type(operand_2) == int and type(operand_3) == int:
@@ -794,36 +896,36 @@ class evm:
         else:
             pass
 
-        self.stack.append('new memory[{}:{}].value({})'.format(
+        self._stack.append('new memory[{}:{}].value({})'.format(
             operand_2, operand_3, operand_1))
 
-    def call(self):
+    def _call(self):
         for _ in range(7):
-            self.stack_pop()
-        self.stack.append('success')
+            self._stack_pop()
+        self._stack.append('success')
 
-    def callcode(self):
+    def _callcode(self):
         for _ in range(7):
-            self.stack_pop()
-        self.stack.append('success')
+            self._stack_pop()
+        self._stack.append('success')
 
-    def evm_return(self):
+    def _evm_return(self):
         for _ in range(2):
-            self.stack_pop()
+            self._stack_pop()
 
-    def delegatecall(self):
+    def _delegatecall(self):
         for _ in range(6):
-            self.stack_pop()
-        self.stack.append('success')
+            self._stack_pop()
+        self._stack.append('success')
 
-    def staticcall(self):
+    def _staticcall(self):
         for _ in range(6):
-            self.stack_pop()
-        self.stack.append('success')
+            self._stack_pop()
+        self._stack.append('success')
 
-    def revert(self):
+    def _revert(self):
         for _ in range(2):
-            self.stack_pop()
+            self._stack_pop()
 
-    def selfdestruct(self):
-        self.stack_pop()
+    def _selfdestruct(self):
+        self._stack_pop()
