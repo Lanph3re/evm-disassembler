@@ -25,7 +25,7 @@ if __name__ == '__main__':
             '\n---\n'
             'DISASSEMBLED RESULT:'
         )
-        for addr, inst in sorted(vm.visited.items()):
+        for addr, visited in sorted(vm.visited.items()):
             if addr in vm.blocks:
                 output.write('\n\nLABEL_{:04X}:'.format(addr))
                 for xref in vm.blocks[addr]:
@@ -34,4 +34,4 @@ if __name__ == '__main__':
                         if xref[1] is not None:
                             output.write(', if {}'.format(xref[1]))
 
-            output.write('\n  0x{:04X}: {}'.format(addr, inst))
+            output.write('\n  0x{:04X}: {}'.format(addr, visited[0]))

@@ -5,6 +5,7 @@ import queue
 
 class Evm:
     FUNC_NOT_ANALYSED = 0xFFFF
+    MAX_DISASSEMBLE_TRIES = 0x5
 
     def __init__(self, data):
         self._data = data
@@ -30,7 +31,7 @@ class Evm:
         # self.visited
         #   @desc visited block information
         #   @key disassembled address
-        #   @value disassembled instruction
+        #   @value [disassembled instruction, is_checked]
         self.visited = {}
 
         # self._fin_addrs
@@ -207,7 +208,18 @@ class Evm:
     def _insert_entry_list_dict(self, dict, k, v):
         if k not in dict:
             dict[k] = []
-        dict[k].append(v)
+        if v not in dict[k]:
+            dict[k].append(v)
+
+    def _check_visited(self):
+        return self._pc not in self.visited \
+            or self.visited[self._pc][1] < self.MAX_DISASSEMBLE_TRIES
+
+    def _mark_visited(self, inst):
+        if self._pc not in self.visited:
+            self.visited[self._pc] = [inst, 0]
+        else:
+            self.visited[self._pc][1] += 1
 
     def _get_new_analysis_entry(self):
         entry = self._queue.get()
@@ -264,7 +276,7 @@ class Evm:
             for _ in range(self.func_list[addr][0] + 1):
                 self._stack.pop()
             self._stack += [
-                'RETURN_VALUE_{}'.format(i)
+                'FUNC_{:04X}_r{}'.format(addr, i)
                 for i in range(self.func_list[addr][1])
             ]
             self._queue.put((self._pc, deepcopy(self._stack)))
@@ -288,7 +300,7 @@ class Evm:
 
                     for e in v:
                         e[1] += [
-                            'RETURN_VALUE_{}'.format(i)
+                            'FUNC_{:04X}_r{}'.format(k, i)
                             for i in range(self.func_list[k][1])
                         ]
                         self._queue.put(e)
@@ -303,16 +315,16 @@ class Evm:
         while not self._queue.empty():
             self._get_new_analysis_entry()
 
-            while self._pc <= len(self._data) and self._pc not in self.visited:
+            while self._pc <= len(self._data) and self._check_visited():
                 cur_op = self._data[self._pc]
                 # skip invalid opcode
                 if cur_op not in self._table:
-                    self.visited[self._pc] = 'INVALID'
+                    self._mark_visited('INVALID')
                     break
                 else:
                     # mark current address as visited
                     inst = self._table[cur_op]
-                    self.visited[self._pc] = inst
+                    self._mark_visited(inst)
 
                 self._pc += 1
                 # execute current operation
@@ -397,23 +409,25 @@ class Evm:
                 self.blocks[fin_addr] = [('// DEAD BLOCK', None)]
 
             self._pc = fin_addr
-            while self._pc <= len(self._data) and self._pc not in self.visited:
+            while self._pc <= len(self._data) and self._check_visited():
                 cur_op = self._data[self._pc]
 
                 # skip invalid opcode
                 if cur_op not in self._table:
-                    self.visited[self._pc] = 'INVALID'
+                    self._mark_visited('INVALID')
                     self._pc += 1
                     continue
 
                 inst = self._table[self._data[self._pc]]
-                self.visited[self._pc] = inst
+                self._mark_visited(inst)
                 self._pc += 1
 
                 if inst.startswith('PUSH'):
                     imm_width = int(inst[4:])
                     imm_val = self._data[self._pc:self._pc + imm_width].hex()
-                    self.visited[self._pc - 1] += ' 0x{}'.format(imm_val)
+                    if len(self.visited[self._pc - 1][0]) <= 6:
+                        self.visited[self._pc - 1][0] += \
+                            ' 0x{}'.format(imm_val)
                     self._pc += imm_width
 
     def _stack_pop(self):
@@ -836,7 +850,8 @@ class Evm:
     def _push(self):
         imm_width = int(self._table[self._data[self._pc - 1]][4:])
         imm_val = self._data[self._pc:self._pc+imm_width].hex()
-        self.visited[self._pc - 1] += ' 0x{}'.format(imm_val)
+        if len(self.visited[self._pc - 1][0]) <= 6:
+            self.visited[self._pc - 1][0] += ' 0x{}'.format(imm_val)
         self._stack.append(int(imm_val, 16))
         self._pc += imm_width
 
