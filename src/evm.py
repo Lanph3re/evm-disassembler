@@ -31,7 +31,7 @@ class Evm:
         # self.visited
         #   @desc visited block information
         #   @key disassembled address
-        #   @value [disassembled instruction, is_checked]
+        #   @value [disassembled instruction, num_disassembled]
         self.visited = {}
 
         # self._fin_addrs
@@ -233,32 +233,23 @@ class Evm:
 
         # detect new function
         if addr not in self.func_list:
+            # push the address of function in analysis queue
+            self._queue.put((addr, deepcopy(self._stack)))
             self.func_list[addr] = [
                 (len(self._stack) - self._stack.index(self._pc) - 1),
                 self.FUNC_NOT_ANALYSED,
             ]
 
-            # push the address of function in analysis queue
-            self._queue.put((addr, deepcopy(self._stack)))
-
         # mark function and its return address as new block
         self._insert_entry_list_dict(
             self.blocks,
             addr,
-            (
-                '// Incoming call from 0x{:04X}, returns to 0x{:04X}'.format(
-                    self._pc - 1, self._pc),
-                None
-            )
+            self._annotation_call()
         )
         self._insert_entry_list_dict(
             self.blocks,
             self._pc,
-            (
-                '// Incoming return from call to 0x{:04X} at 0x{:04X}'.format(
-                    addr, self._pc - 1),
-                None
-            )
+            self._annotation_return(addr)
         )
 
         # defer disassemble until the number of return values is figured out
@@ -268,17 +259,13 @@ class Evm:
                 addr,
                 [
                     self._pc,
-                    deepcopy(self._stack)[
-                        :-(self.func_list[addr][0] + 1)]
+                    deepcopy(self._stack)[:-(self.func_list[addr][0] + 1)]
                 ]
             )
         else:  # push return values in stack and continue
             for _ in range(self.func_list[addr][0] + 1):
                 self._stack.pop()
-            self._stack += [
-                'FUNC_{:04X}_r{}'.format(addr, i)
-                for i in range(self.func_list[addr][1])
-            ]
+            self._stack += self._get_func_ret_vals(addr)
             self._queue.put((self._pc, deepcopy(self._stack)))
 
         return True
@@ -299,15 +286,42 @@ class Evm:
                         self.func_list[k][1] -= 1
 
                     for e in v:
-                        e[1] += [
-                            'FUNC_{:04X}_r{}'.format(k, i)
-                            for i in range(self.func_list[k][1])
-                        ]
+                        e[1] += self._get_func_ret_vals(k)
                         self._queue.put(e)
 
                     del self._deferred_analysis[k]
                     return True
         return False
+
+    def _get_func_ret_vals(self, addr):
+        return [
+            'FUNC_{:04X}_r{}'.format(addr, i)
+            for i in range(self.func_list[addr][1])
+        ]
+
+    def _annotation_jump(self, addr, cond):
+        return (
+            '// Incoming jump from 0x{:04X}'.format(addr),
+            cond
+        )
+
+    def _annotation_call(self):
+        return (
+            '// Incoming call from 0x{:04X}, returns to 0x{:04X}'.format(
+                self._pc - 1,
+                self._pc
+            ),
+            None
+        )
+
+    def _annotation_return(self, addr):
+        return (
+            '// Incoming return from call to 0x{:04X} at 0x{:04X}'.format(
+                addr,
+                self._pc - 1
+            ),
+            None
+        )
 
     # recursive traversal disassemble
     def recursive_run(self):
@@ -317,16 +331,15 @@ class Evm:
 
             while self._pc < len(self._data) and self._check_visited():
                 cur_op = self._data[self._pc]
-                # skip invalid opcode
+
                 if cur_op not in self._table:
                     self._mark_visited('INVALID')
                     break
                 else:
-                    # mark current address as visited
                     inst = self._table[cur_op]
                     self._mark_visited(inst)
+                    self._pc += 1
 
-                self._pc += 1
                 # execute current operation
                 if inst not in self._jump_ops:
                     self._stack_func(cur_op)
@@ -350,11 +363,7 @@ class Evm:
                     self._insert_entry_list_dict(
                         self.blocks,
                         self._pc,
-                        (
-                            '// Incoming jump from 0x{:04X}'.format(
-                                self._pc - 1),
-                            'not ' + cond
-                        )
+                        self._annotation_jump(self._pc - 1, 'not ' + cond)
                     )
 
                     # skip indirect call
@@ -366,11 +375,7 @@ class Evm:
                     self._insert_entry_list_dict(
                         self.blocks,
                         jump_addr,
-                        (
-                            '// Incoming jump from 0x{:04X}'.format(
-                                self._pc - 1),
-                            cond
-                        )
+                        self._annotation_jump(self._pc - 1, cond)
                     )
                 else:  # 'JUMP'
                     jump_addr = self._jump()
@@ -394,11 +399,7 @@ class Evm:
                         self._insert_entry_list_dict(
                             self.blocks,
                             jump_addr,
-                            (
-                                '// Incoming jump from 0x{:04X}'.format(
-                                    self._pc - 1),
-                                None
-                            )
+                            self._annotation_jump(self._pc - 1, None)
                         )
                         break
 

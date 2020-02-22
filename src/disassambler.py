@@ -8,16 +8,19 @@ if __name__ == '__main__':
     with open('output', 'w') as output:
         output.write('FUNCTIONS:\n\n')
         for func, func_info in sorted(vm.func_list.items()):
+            args = ', '.join([
+                'arg{}'.format(i) for i in range(func_info[0])
+            ])
+            retvals = ', '.join([
+                'r{}'.format(i) for i in range(func_info[1])
+            ]) if func_info[1] != vm.FUNC_NOT_ANALYSED else '?'
+
             output.write(
                 '  FUNC_{:04X}({}) -> ({})\n'
                 .format(
                     func,
-                    ', '.join([
-                        'arg{}'.format(i) for i in range(func_info[0])
-                    ]),
-                    ', '.join([
-                        'r{}'.format(i) for i in range(func_info[1])
-                    ]) if func_info[1] != vm.FUNC_NOT_ANALYSED else '?'
+                    args,
+                    retvals
                 )
             )
 
