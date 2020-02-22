@@ -212,8 +212,13 @@ class Evm:
             dict[k].append(v)
 
     def _check_visited(self):
-        return self._pc not in self.visited \
-            or self.visited[self._pc][1] < self.MAX_DISASSEMBLE_TRIES
+        if self._pc not in self.visited:
+            return True
+
+        if self.visited[self._pc][1] < self.MAX_DISASSEMBLE_TRIES:
+            return True
+
+        return False
 
     def _mark_visited(self, inst):
         if self._pc not in self.visited:
@@ -331,7 +336,6 @@ class Evm:
 
             while self._pc < len(self._data) and self._check_visited():
                 cur_op = self._data[self._pc]
-
                 if cur_op not in self._table:
                     self._mark_visited('INVALID')
                     break
@@ -382,26 +386,26 @@ class Evm:
 
                     if self._is_function(jump_addr):
                         break
-                    else:  # simple jump
-                        # we don't know instruction following
-                        # unconditional jump is executable code
-                        self._fin_addrs.append(self._pc)
 
-                        # skip indirect call
-                        if type(jump_addr) != int:
-                            break
+                    # we don't know instruction following
+                    # unconditional jump is executable code
+                    self._fin_addrs.append(self._pc)
 
-                        if self._process_deferred(jump_addr):
-                            break
-
-                        # mark destination of 'JUMP' as new block
-                        self._queue.put((jump_addr, deepcopy(self._stack)))
-                        self._insert_entry_list_dict(
-                            self.blocks,
-                            jump_addr,
-                            self._annotation_jump(self._pc - 1, None)
-                        )
+                    # skip indirect call
+                    if type(jump_addr) != int:
                         break
+
+                    if self._process_deferred(jump_addr):
+                        break
+
+                    # mark destination of 'JUMP' as new block
+                    self._queue.put((jump_addr, deepcopy(self._stack)))
+                    self._insert_entry_list_dict(
+                        self.blocks,
+                        jump_addr,
+                        self._annotation_jump(self._pc - 1, None)
+                    )
+                    break
 
     # do linear disassemble to find dead blocks
     def linear_run(self):

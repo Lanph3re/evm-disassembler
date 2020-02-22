@@ -1,5 +1,10 @@
 from evm import Evm
 
+
+def get_list_with_prefix(prefix, len):
+    return ['{}{}'.format(prefix, i) for i in range(len)]
+
+
 if __name__ == '__main__':
     vm = Evm(bytes.fromhex(input('>> ')))
     vm.recursive_run()
@@ -7,20 +12,13 @@ if __name__ == '__main__':
 
     with open('output', 'w') as output:
         output.write('FUNCTIONS:\n\n')
-        for func, func_info in sorted(vm.func_list.items()):
-            args = ', '.join([
-                'arg{}'.format(i) for i in range(func_info[0])
-            ])
-            retvals = ', '.join([
-                'r{}'.format(i) for i in range(func_info[1])
-            ]) if func_info[1] != vm.FUNC_NOT_ANALYSED else '?'
-
+        for addr, info in sorted(vm.func_list.items()):
             output.write(
                 '  FUNC_{:04X}({}) -> ({})\n'
                 .format(
-                    func,
-                    args,
-                    retvals
+                    addr,
+                    ', '.join(get_list_with_prefix('arg', info[0])),
+                    ', '.join(get_list_with_prefix('r', info[1])),
                 )
             )
 
