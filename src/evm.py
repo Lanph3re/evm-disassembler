@@ -15,11 +15,11 @@ class Evm:
         # queue used for recursive descent algorithm
         self._queue = queue.Queue(maxsize=0)
 
-        # self.blocks
+        # self._blocks
         #   @desc basic block information
         #   @key start address of block
         #   @value [(annotation, cond), ...]
-        self.blocks = {0: [(None, None)]}
+        self._blocks = {0: [(None, None)]}
 
         # @Current unused variable
         # self.block_input
@@ -28,21 +28,21 @@ class Evm:
         #  @value created input in block
         self.block_input = {}
 
-        # self.visited
+        # self._visited
         #   @desc visited block information
         #   @key disassembled address
         #   @value [disassembled instruction, num_disassembled]
-        self.visited = {}
+        self._visited = {}
 
         # self._fin_addrs
         #   @desc address that will be disassembled in linear disassemble algorithm
         self._fin_addrs = []
 
-        # self.func_list
+        # self._func_list
         #   @desc function information
         #   @key address of function
         #   @value [num_args, num_retval]
-        self.func_list = {0x0: [0, 0]}
+        self._func_list = {0x0: [0, 0]}
 
         # self._deferred_analysis
         #   @desc return addresses of function
@@ -212,19 +212,19 @@ class Evm:
             dict[k].append(v)
 
     def _check_visited(self):
-        if self._pc not in self.visited:
+        if self._pc not in self._visited:
             return True
 
-        if self.visited[self._pc][1] < self.MAX_DISASSEMBLE_TRIES:
+        if self._visited[self._pc][1] < self.MAX_DISASSEMBLE_TRIES:
             return True
 
         return False
 
     def _mark_visited(self, inst):
-        if self._pc not in self.visited:
-            self.visited[self._pc] = [inst, 0]
+        if self._pc not in self._visited:
+            self._visited[self._pc] = [inst, 0]
         else:
-            self.visited[self._pc][1] += 1
+            self._visited[self._pc][1] += 1
 
     def _get_new_analysis_entry(self):
         entry = self._queue.get()
@@ -237,38 +237,38 @@ class Evm:
             return False
 
         # detect new function
-        if addr not in self.func_list:
+        if addr not in self._func_list:
             # push the address of function in analysis queue
             self._queue.put((addr, deepcopy(self._stack)))
-            self.func_list[addr] = [
+            self._func_list[addr] = [
                 (len(self._stack) - self._stack.index(self._pc) - 1),
                 self.FUNC_NOT_ANALYSED,
             ]
 
         # mark function and its return address as new block
         self._insert_entry_list_dict(
-            self.blocks,
+            self._blocks,
             addr,
             self._annotation_call()
         )
         self._insert_entry_list_dict(
-            self.blocks,
+            self._blocks,
             self._pc,
             self._annotation_return(addr)
         )
 
         # defer disassemble until the number of return values is figured out
-        if self.func_list[addr][1] == self.FUNC_NOT_ANALYSED:
+        if self._func_list[addr][1] == self.FUNC_NOT_ANALYSED:
             self._insert_entry_list_dict(
                 self._deferred_analysis,
                 addr,
                 [
                     self._pc,
-                    deepcopy(self._stack)[:-(self.func_list[addr][0] + 1)]
+                    deepcopy(self._stack)[:-(self._func_list[addr][0] + 1)]
                 ]
             )
         else:  # push return values in stack and continue
-            for _ in range(self.func_list[addr][0] + 1):
+            for _ in range(self._func_list[addr][0] + 1):
                 self._stack.pop()
             self._stack += self._get_func_ret_vals(addr)
             self._queue.put((self._pc, deepcopy(self._stack)))
@@ -281,14 +281,14 @@ class Evm:
             for ret, stack in v:
                 if ret == addr:
                     # calculate the number of return values
-                    self.func_list[k][1] = \
+                    self._func_list[k][1] = \
                         len(self._stack) - len(stack)
 
                     # heuristic: duplicate return address
                     #   if return address is duplicated value from stack,
                     #   take that into consideration
                     if addr in self._stack:
-                        self.func_list[k][1] -= 1
+                        self._func_list[k][1] -= 1
 
                     for e in v:
                         e[1] += self._get_func_ret_vals(k)
@@ -301,7 +301,7 @@ class Evm:
     def _get_func_ret_vals(self, addr):
         return [
             'FUNC_{:04X}_r{}'.format(addr, i)
-            for i in range(self.func_list[addr][1])
+            for i in range(self._func_list[addr][1])
         ]
 
     def _annotation_jump(self, addr, cond):
@@ -328,8 +328,13 @@ class Evm:
             None
         )
 
+    def disassemble(self):
+        self._recursive_run()
+        self._linear_run()
+        return self._visited, self._func_list, self._blocks
+
     # recursive traversal disassemble
-    def recursive_run(self):
+    def _recursive_run(self):
         self._queue.put((0, []))
         while not self._queue.empty():
             self._get_new_analysis_entry()
@@ -361,11 +366,11 @@ class Evm:
                     #   using pattern 'PUSH4, ..., JUMPI'
                     if self._data[self._pc - 0xb] == 0x63 or \
                        self._data[self._pc - 0xa] == 0x63:
-                        self.func_list[jump_addr] = [0, 1]
+                        self._func_list[jump_addr] = [0, 1]
 
                     # mark instruction following 'JUMPI' as new block
                     self._insert_entry_list_dict(
-                        self.blocks,
+                        self._blocks,
                         self._pc,
                         self._annotation_jump(self._pc - 1, 'not ' + cond)
                     )
@@ -377,13 +382,12 @@ class Evm:
                     # mark destination of 'JUMPI' as new block
                     self._queue.put((jump_addr, deepcopy(self._stack)))
                     self._insert_entry_list_dict(
-                        self.blocks,
+                        self._blocks,
                         jump_addr,
                         self._annotation_jump(self._pc - 1, cond)
                     )
                 else:  # 'JUMP'
                     jump_addr = self._jump()
-
                     if self._is_function(jump_addr):
                         break
 
@@ -401,17 +405,17 @@ class Evm:
                     # mark destination of 'JUMP' as new block
                     self._queue.put((jump_addr, deepcopy(self._stack)))
                     self._insert_entry_list_dict(
-                        self.blocks,
+                        self._blocks,
                         jump_addr,
                         self._annotation_jump(self._pc - 1, None)
                     )
                     break
 
     # do linear disassemble to find dead blocks
-    def linear_run(self):
+    def _linear_run(self):
         for fin_addr in self._fin_addrs:
-            if fin_addr not in self.visited:
-                self.blocks[fin_addr] = [('// DEAD BLOCK', None)]
+            if fin_addr not in self._visited:
+                self._blocks[fin_addr] = [('// DEAD BLOCK', None)]
 
             self._pc = fin_addr
             while self._pc < len(self._data) and self._check_visited():
@@ -430,8 +434,8 @@ class Evm:
                 if inst.startswith('PUSH'):
                     imm_width = int(inst[4:])
                     imm_val = self._data[self._pc:self._pc + imm_width].hex()
-                    if len(self.visited[self._pc - 1][0]) <= 6:
-                        self.visited[self._pc - 1][0] += \
+                    if len(self._visited[self._pc - 1][0]) <= 6:
+                        self._visited[self._pc - 1][0] += \
                             ' 0x{}'.format(imm_val)
                     self._pc += imm_width
 
@@ -855,8 +859,8 @@ class Evm:
     def _push(self):
         imm_width = int(self._table[self._data[self._pc - 1]][4:])
         imm_val = self._data[self._pc:self._pc+imm_width].hex()
-        if len(self.visited[self._pc - 1][0]) <= 6:
-            self.visited[self._pc - 1][0] += ' 0x{}'.format(imm_val)
+        if len(self._visited[self._pc - 1][0]) <= 6:
+            self._visited[self._pc - 1][0] += ' 0x{}'.format(imm_val)
         self._stack.append(int(imm_val, 16))
         self._pc += imm_width
 
