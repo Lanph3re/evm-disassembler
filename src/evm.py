@@ -315,7 +315,7 @@ class Evm:
         while not self._queue.empty():
             self._get_new_analysis_entry()
 
-            while self._pc <= len(self._data) and self._check_visited():
+            while self._pc < len(self._data) and self._check_visited():
                 cur_op = self._data[self._pc]
                 # skip invalid opcode
                 if cur_op not in self._table:
@@ -409,7 +409,7 @@ class Evm:
                 self.blocks[fin_addr] = [('// DEAD BLOCK', None)]
 
             self._pc = fin_addr
-            while self._pc <= len(self._data) and self._check_visited():
+            while self._pc < len(self._data) and self._check_visited():
                 cur_op = self._data[self._pc]
 
                 # skip invalid opcode
