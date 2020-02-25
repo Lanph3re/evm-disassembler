@@ -4,3 +4,6 @@ input
 output*
 *.pyc
 answers.txt
+target
+Note.md
+sample_ir
