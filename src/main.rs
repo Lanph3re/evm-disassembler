@@ -1,5 +1,5 @@
-extern crate clap;
 use clap::{App, Arg};
+mod decompile;
 
 fn main() {
     let matches = App::new("EVM Decompiler")
@@ -14,5 +14,5 @@ fn main() {
         )
         .get_matches();
 
-    println!("Using input file: {}", matches.value_of("INPUT").unwrap());
+    decompile::evm_decompile(matches.value_of("INPUT"));
 }
